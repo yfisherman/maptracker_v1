@@ -35,7 +35,8 @@ class SlotwiseTemporalGate(BaseModule):
         )
 
     def forward(self, q_cur, mem_embeds, key_padding_mask=None, valid_mem=None,
-                delta_t_int=None, age_rank_norm=None, clean_mem_embeds=None):
+                delta_t_int=None, age_rank_norm=None, clean_mem_embeds=None,
+                eligible_mask=None):
         """Build gated memory values.
 
         Args:
@@ -51,8 +52,17 @@ class SlotwiseTemporalGate(BaseModule):
         q_len, bs, _ = q_cur.shape
         mem_len = mem_embeds.shape[0]
 
+        if eligible_mask is None:
+            eligible_mask = q_cur.new_ones((bs, q_len, mem_len), dtype=torch.bool)
+        else:
+            eligible_mask = eligible_mask.to(dtype=torch.bool)
+
+        if key_padding_mask is not None:
+            eligible_mask = eligible_mask & (~key_padding_mask[:, None, :])
+
         if (not self.enabled) or mem_len == 0:
             alpha = q_cur.new_ones((q_len, bs, mem_len))
+            alpha = alpha * eligible_mask.permute(1, 0, 2).to(dtype=alpha.dtype)
             return mem_embeds, alpha
 
         q_bt = q_cur.permute(1, 0, 2)
@@ -86,15 +96,10 @@ class SlotwiseTemporalGate(BaseModule):
             [q_expand, mem_expand, cos_key, l2_val, valid_mem_bqt, delta_t_bqt, age_rank_bqt],
             dim=-1)
         alpha_bqt = torch.sigmoid(self.gate_mlp(gate_inputs).squeeze(-1))
-
-        if key_padding_mask is not None:
-            alpha_bqt = alpha_bqt.masked_fill(key_padding_mask[:, None, :], 0.0)
+        alpha_bqt = alpha_bqt * eligible_mask.to(dtype=alpha_bqt.dtype)
 
         alpha_qbt = alpha_bqt.permute(1, 0, 2)
-        if q_len == 1:
-            alpha_bt = alpha_bqt[:, 0, :]
-        else:
-            alpha_bt = alpha_bqt.mean(dim=1)
+        alpha_bt = alpha_bqt[:, 0, :]
         gated_values = mem_embeds * alpha_bt.transpose(0, 1).unsqueeze(-1)
         return gated_values, alpha_qbt
 
@@ -393,11 +398,17 @@ class MapTransformerLayer(BaseTransformerLayer):
                     assert attn_index == 2
                     if memory_bank is not None:
                         bs = query.shape[1]
+                        if not hasattr(memory_bank, 'batch_alpha_soft_dict'):
+                            memory_bank.batch_alpha_soft_dict = {}
+                        if not hasattr(memory_bank, 'batch_v_mem_soft_dict'):
+                            memory_bank.batch_v_mem_soft_dict = {}
                         query_i_list = []
                         for b_i in range(bs):
                             valid_track_idx = all_valid_track_idx[b_i] 
                             query_i = query[:, b_i].clone()
                             query_i = query_i[None,:]
+                            query_i_memory = torch.zeros_like(query_i)
+
                             if len(valid_track_idx) != 0:
                                 mem_embeds = memory_bank.batch_mem_embeds_dict[b_i][:, valid_track_idx, :]
                                 mem_key_padding_mask = memory_bank.batch_key_padding_dict[b_i][valid_track_idx]
@@ -406,6 +417,15 @@ class MapTransformerLayer(BaseTransformerLayer):
                                 delta_t_int = memory_bank.batch_delta_t_int_dict[b_i][valid_track_idx]
                                 age_rank_norm = memory_bank.batch_age_rank_norm_dict[b_i][valid_track_idx]
                                 clean_mem_embeds = memory_bank.batch_mem_clean_embeds_dict[b_i][:, valid_track_idx, :]
+
+                                valid_track_idx = valid_track_idx.to(query_i.device)
+                                valid_query_mask = torch.ones_like(valid_track_idx, dtype=torch.bool)
+                                if query_key_padding_mask is not None:
+                                    valid_query_mask = ~query_key_padding_mask[b_i, valid_track_idx]
+
+                                eligible_mask = valid_mem[:, None, :].to(torch.bool)
+                                eligible_mask = eligible_mask & valid_query_mask[:, None, None]
+
                                 mem_values, alpha = self.temporal_gate(
                                     query_i[:, valid_track_idx],
                                     mem_embeds,
@@ -414,20 +434,31 @@ class MapTransformerLayer(BaseTransformerLayer):
                                     delta_t_int=delta_t_int,
                                     age_rank_norm=age_rank_norm,
                                     clean_mem_embeds=clean_mem_embeds,
+                                    eligible_mask=eligible_mask,
                                 )
 
-                                query_i[:, valid_track_idx] = self.attentions[attn_index](
-                                        query_i[:,valid_track_idx],
-                                        mem_embeds,
-                                        mem_values,
-                                        identity=None,
-                                        query_pos=None,
-                                        key_pos=mem_key_pos,
-                                        attn_mask=None,
-                                        key_padding_mask=mem_key_padding_mask,
-                                        **kwargs)
+                                if valid_query_mask.any():
+                                    valid_q_idx = valid_track_idx[valid_query_mask]
+                                    query_i_memory[:, valid_q_idx] = self.attentions[attn_index](
+                                            query_i[:, valid_q_idx],
+                                            mem_embeds[:, valid_query_mask, :],
+                                            mem_values[:, valid_query_mask, :],
+                                            identity=None,
+                                            query_pos=None,
+                                            key_pos=mem_key_pos[:, valid_query_mask, :],
+                                            attn_mask=None,
+                                            key_padding_mask=mem_key_padding_mask[valid_query_mask],
+                                            **kwargs)
 
-                            query_i_list.append(query_i[0])
+                                alpha_soft_full = query_i.new_zeros((query_i.shape[1], mem_embeds.shape[0]))
+                                alpha_soft_full[valid_track_idx] = alpha[0]
+                                memory_bank.batch_alpha_soft_dict[b_i] = alpha_soft_full
+                                memory_bank.batch_v_mem_soft_dict[b_i] = mem_values.detach()
+                            else:
+                                memory_bank.batch_alpha_soft_dict[b_i] = query_i.new_zeros((query_i.shape[1], 0))
+                                memory_bank.batch_v_mem_soft_dict[b_i] = query_i.new_zeros((0, 0, query_i.shape[-1]))
+
+                            query_i_list.append(query_i_memory[0])
                         query_memory = torch.stack(query_i_list).permute(1, 0, 2)
                     else:
                         query_memory = torch.zeros_like(query_bev)
