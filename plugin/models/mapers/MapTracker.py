@@ -506,6 +506,11 @@ class MapTracker(BaseMapper):
 
         _use_memory = self.use_memory and self.num_iter > self.mem_warmup_iters
 
+        clip_corruption_mode = 'clean' if self.clean_validation_only else self._sample_corruption_mode()
+        if self.corruption_trained_no_gate_baseline:
+            clip_corruption_mode = self._sample_corruption_mode()
+        clip_stale_offset = self._resolve_stale_offset()
+
         if all_prev_data is not None:
             num_prev_frames = len(all_prev_data)        
             all_gts_prev, all_img_prev, all_img_metas_prev, all_semantic_mask_prev  = [], [], [], []
@@ -528,10 +533,6 @@ class MapTracker(BaseMapper):
         else:
             backprop_backbone_ids = [num_prev_frames, ] # only the last frame trains the backbone (all other settings)
 
-        clip_corruption_mode = 'clean' if self.clean_validation_only else self._sample_corruption_mode()
-        if self.corruption_trained_no_gate_baseline:
-            clip_corruption_mode = self._sample_corruption_mode()
-        clip_stale_offset = self._resolve_stale_offset()
         self._inject_memory_corruption_meta(img_metas, clip_corruption_mode, clip_stale_offset)
 
         track_query_info = None
