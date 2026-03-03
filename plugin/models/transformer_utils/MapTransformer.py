@@ -20,6 +20,62 @@ from mmdet.models.utils.transformer import Transformer
 from .CustomMSDeformableAttention import CustomMSDeformableAttention
 from mmdet.models.utils.transformer import inverse_sigmoid
 
+
+class SlotwiseTemporalGate(BaseModule):
+    """Lightweight slotwise temporal gate for decoder memory value scaling."""
+
+    def __init__(self, embed_dims, hidden_dims=64, enabled=False, init_cfg=None):
+        super().__init__(init_cfg)
+        self.enabled = enabled
+        self.embed_dims = embed_dims
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(embed_dims * 2 + 2, hidden_dims),
+            nn.GELU(),
+            nn.Linear(hidden_dims, 1),
+        )
+
+    def forward(self, q_cur, mem_embeds, key_padding_mask=None):
+        """Build gated memory values.
+
+        Args:
+            q_cur (Tensor): [Q, B, D]
+            mem_embeds (Tensor): [T, B, D]
+            key_padding_mask (Tensor | None): [B, T], True denotes padding.
+
+        Returns:
+            tuple[Tensor, Tensor]:
+                - gated memory value [T, B, D]
+                - alpha [Q, B, T]
+        """
+        q_len, bs, _ = q_cur.shape
+        mem_len = mem_embeds.shape[0]
+
+        if (not self.enabled) or mem_len == 0:
+            alpha = q_cur.new_ones((q_len, bs, mem_len))
+            return mem_embeds, alpha
+
+        q_bt = q_cur.permute(1, 0, 2)
+        mem_bt = mem_embeds.permute(1, 0, 2)
+
+        q_expand = q_bt[:, :, None, :].expand(-1, -1, mem_len, -1)
+        mem_expand = mem_bt[:, None, :, :].expand(-1, q_len, -1, -1)
+
+        cos_key = nn.functional.cosine_similarity(q_expand, mem_expand, dim=-1, eps=1e-6).unsqueeze(-1)
+        l2_val = torch.norm(q_expand - mem_expand, dim=-1, keepdim=True) / math.sqrt(self.embed_dims)
+        gate_inputs = torch.cat([q_expand, mem_expand, cos_key, l2_val], dim=-1)
+        alpha_bqt = torch.sigmoid(self.gate_mlp(gate_inputs).squeeze(-1))
+
+        if key_padding_mask is not None:
+            alpha_bqt = alpha_bqt.masked_fill(key_padding_mask[:, None, :], 0.0)
+
+        alpha_qbt = alpha_bqt.permute(1, 0, 2)
+        if q_len == 1:
+            alpha_bt = alpha_bqt[:, 0, :]
+        else:
+            alpha_bt = alpha_bqt.mean(dim=1)
+        gated_values = mem_embeds * alpha_bt.transpose(0, 1).unsqueeze(-1)
+        return gated_values, alpha_qbt
+
     
 @TRANSFORMER_LAYER_SEQUENCE.register_module()
 class MapTransformerDecoder_new(BaseModule):
@@ -182,6 +238,7 @@ class MapTransformerLayer(BaseTransformerLayer):
                  ),
                  operation_order=None,
                  norm_cfg=dict(type='LN'),
+                 temporal_gate_cfg=None,
                  init_cfg=None,
                  batch_first=False,
                  **kwargs):
@@ -194,6 +251,15 @@ class MapTransformerLayer(BaseTransformerLayer):
             init_cfg=init_cfg,
             batch_first=batch_first,
             **kwargs
+        )
+
+        temporal_gate_cfg = temporal_gate_cfg or {}
+        gate_enabled = temporal_gate_cfg.get('enabled', False)
+        gate_hidden_dims = temporal_gate_cfg.get('hidden_dims', 64)
+        self.temporal_gate = SlotwiseTemporalGate(
+            embed_dims=self.embed_dims,
+            hidden_dims=gate_hidden_dims,
+            enabled=gate_enabled,
         )
 
     def forward(self,
@@ -314,11 +380,16 @@ class MapTransformerLayer(BaseTransformerLayer):
                                 mem_embeds = memory_bank.batch_mem_embeds_dict[b_i][:, valid_track_idx, :]
                                 mem_key_padding_mask = memory_bank.batch_key_padding_dict[b_i][valid_track_idx]
                                 mem_key_pos = memory_bank.batch_mem_relative_pe_dict[b_i][:, valid_track_idx]
+                                mem_values, alpha = self.temporal_gate(
+                                    query_i[:, valid_track_idx],
+                                    mem_embeds,
+                                    key_padding_mask=mem_key_padding_mask,
+                                )
 
                                 query_i[:, valid_track_idx] = self.attentions[attn_index](
                                         query_i[:,valid_track_idx],
                                         mem_embeds,
-                                        mem_embeds,
+                                        mem_values,
                                         identity=None,
                                         query_pos=None,
                                         key_pos=mem_key_pos,

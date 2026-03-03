@@ -184,6 +184,10 @@ model = dict(
                 return_intermediate=True,
                 transformerlayers=dict(
                     type='MapTransformerLayer',
+                    temporal_gate_cfg=dict(
+                        enabled=True,
+                        hidden_dims=64,
+                    ),
                     attn_cfgs=[
                         dict(
                             type='MultiheadAttention',
