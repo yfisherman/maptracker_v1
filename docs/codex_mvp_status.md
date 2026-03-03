@@ -1,59 +1,76 @@
-# MVP Status
+# MVP Status (Final Compliance Audit)
 
-- **Current status:** Milestone 4 complete (gate loss wiring + training outputs/logging + MVP config/test wiring).
-- **Scope note:** Kept the base MapTracker objective intact and added only MVP gate supervision terms (`L_close`, `L_open`, optional `L_clean`) plus gate diagnostics.
+## Final implemented scope (as currently in repo)
 
-## Completed implementation work
+- **Implemented core path:** pre-fusion temporal gating callsite is in decoder memory cross-attention branch (`MapTransformerLayer.forward`, `attn_index == 2`) before fusion with BEV path (`query = query_memory + query_bev`).
+- **Implemented gate form:** scalar `alpha` from a lightweight MLP; value scaling path only (no additive attention-logit bias).
+- **Implemented corruption protocol:** read-path corruption modes (`clean`, `c_full`, `c_tail`) with onset and stale offset controls in `VectorInstanceMemory`; canonical memory bank remains clean and corruption is applied only to local read tensors.
+- **Implemented supervision/logging:** `L_close`, `L_open`, optional `L_clean`, gate metrics (`alpha_mean_*`, `affected_batch_fraction`) and clean-path strength ratio logging.
+- **Implemented parity control:** corruption-trained no-gate mode is config-wired, and gate loss is now explicitly disabled when `corruption_trained_no_gate_baseline=True` to avoid penalizing no-gate runs.
 
-1. **Gate supervision loss wiring (MapTracker):**
-   - Added corruption-context sampling/wiring for clip-level `clean` / `c_full` / `c_tail` training metadata.
-   - Added gate supervision aggregation with explicit masks from memory corruption outputs:
-     - `L_close` on affected corrupted slots.
-     - `L_open` on preserved recent slots.
-     - optional weak `L_clean` on recent clean slots.
-   - Added weighted `gate_loss` and conditional inclusion into total loss (`gate_supervision_enabled`).
+## Compliance findings vs `docs/mvp_spec.md` / `docs/codex_mvp_plan.md`
 
-2. **Required alpha and gate logging:**
-   - `alpha_mean_affected`
-   - `alpha_mean_preserved_recent`
-   - `alpha_mean_clean_recent`
-   - `affected_batch_fraction`
-   - `historical_path_strength_ratio_clean`
-   - plus scalar loss terms in logs: `gate_loss`, `L_close`, `L_open`, `L_clean`
+### Pass (implemented and aligned)
 
-3. **Minimal config/experiment wiring (stage2 + stage3 configs):**
-   - Added `mvp_temporal_gate_cfg` fields for:
-     - corruption probabilities
-     - stale offsets
-     - gate loss weights
-     - freeze/unfreeze stage tags
-     - clean-validation and contradiction-suite flags
-     - corruption-trained no-gate baseline switch
-   - Kept explicit stage wiring and temporal gate enable toggles in transformer layer configs.
+1. **Gate placement is pre-fusion** in decoder memory branch, not post-fusion.
+2. **Corruption is read-only** (local corrupted view built from clean/canonical tensors; write buffers not overwritten by corruption path).
+3. **C-full/C-tail are present** with onset and stale-offset handling.
+4. **Value scaling only** is used (no key scaling or additive logit-bias machinery).
+5. **Corruption-trained no-gate parity control exists**, and gate-loss contamination in no-gate mode is now blocked.
 
-4. **Tests and lightweight validation utility:**
-   - Added MVP gate tests (dimension smoke, no-history, one-alpha parity, zero-alpha suppression, corrupted-read isolation, C-tail selectivity).
-   - Added a lightweight static validator script for Milestone 4 wiring checks.
+### Missing / partial for a fully defendable MVP claim
 
-## Completed validations
+1. **Strict propagated/new/pad query masking semantics are only partial.**
+   - Current gating eligibility relies on `valid_track_idx`, `query_key_padding_mask`, and memory validity, but does not thread explicit propagated/new/pad masks exactly as the spec’s canonical formulation.
+2. **True per-query-slot pre-attention value scaling is approximated.**
+   - Current `MultiheadAttention` call path still uses shared value tensors per attention call; implementation computes `alpha[q,b,t]` but applies a per-slot value scale derived from a single query slice in the active call path.
+   - This is the repo-grounded compromise in `docs/codex_mvp_plan.md`, but it is weaker than the strict spec ideal.
+3. **Runtime validation is incomplete in this environment.**
+   - Only static/syntactic and lightweight local checks were run here; no end-to-end training/eval jobs were executed.
 
-- `python -m py_compile plugin/models/mapers/MapTracker.py plugin/models/transformer_utils/MapTransformer.py plugin/models/heads/MapDetectorHead.py tests/test_temporal_gate_mvp.py tools/validate_milestone4_gate.py`
-- `python tools/validate_milestone4_gate.py`
-- `python -m unittest tests/test_temporal_gate_mvp.py -v`
+### Overengineering / drift checks
 
-## Remaining manual training / evaluation steps
+- No BEV reliability branch, no bilinear module, no additive logit bias, no geometry-localized routing, and no translation/rotation corruption were introduced for MVP path.
+- Existing repo complexity around stage tags/config flags remains, but no new speculative architecture was added in this audit.
 
-1. Run short gated training smoke on stage2 config with corruption enabled and verify:
-   - non-zero `affected_batch_fraction` over training windows.
-   - `L_close` and `L_open` both numerically active.
-2. Run stage3 joint finetune smoke and verify alpha trends:
-   - affected slots trend lower than preserved recent slots.
-3. Run clean-validation pass and inspect `historical_path_strength_ratio_clean` for collapse/over-suppression.
-4. Run contradiction-suite configured experiment path and compare gate/no-gate outputs.
-5. Run corruption-trained no-gate baseline config path (same corruption schedule, gate disabled) for parity checks.
+## Required manual next steps
 
-## Known limitations
+1. Run short stage2 and stage3 training smokes for **gated** and **corruption-trained no-gate** paths with identical corruption schedule and data path.
+2. Confirm B1 vs B2 parity with matched seeds/settings and verify that only gate-specific toggles differ.
+3. Validate contradiction-suite and clean-validation reporting in full runtime environment.
+4. Inspect whether the current per-slot scaling approximation is sufficient for the final claim; if not, plan a tightly scoped K/V interface step after MVP audit sign-off.
 
-- Runtime torch-based execution is blocked in this environment (`No module named 'torch'`), so dynamic tensor-behavior tests are added but currently skipped here.
-- No long training jobs were launched in this prompt by design.
-- The contradiction-suite and clean-validation flags are wired as config/runtime controls; end-to-end dataset/evaluator behavior must be validated in a full training/eval environment.
+## Known caveats
+
+- This environment did not run full training/evaluation.
+- Some tests are dependency-gated by local runtime availability (e.g., full torch stack / project runtime context).
+- Current implementation follows the conservative no-major-refactor path, so strict per-query-slot pre-attention scaling semantics are partially approximated rather than fully refactored.
+
+## Deferred items (intentionally not implemented)
+
+- Multi-head independent gating.
+- Bilinear disagreement feature branch.
+- BEV reliability branch (`c_ent/c_coh/c_rel`).
+- Additive attention-logit bias.
+- Geometry-localized failure routing (`geom_fail_mask`, transformed previous-query routing).
+- Translation/rotation corruption modes.
+- Natural inconsistency subset and broad ablation expansion.
+
+## Validation state breakdown
+
+### Implemented
+
+- Decoder pre-fusion gate callsite, corruption engine, gate supervision/loss/logging, and config wiring.
+
+### Statically / syntactically checked
+
+- Python compilation for touched implementation files.
+- Existing local MVP tests and validation utility invocation (subject to environment/runtime deps).
+
+### Runtime-validated in this session
+
+- Limited to local command-level checks listed below in this file’s update commit.
+
+### Blocked by current environment
+
+- Full long-horizon training runs and benchmark-quality evaluation sweeps (clean + contradiction suite) were not executed in this session.
