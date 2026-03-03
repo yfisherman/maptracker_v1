@@ -714,7 +714,8 @@ class MapTracker(BaseMapper):
             loss += trans_loss_t
 
         gate_metrics = self._compute_gate_supervision(self.memory_bank if _use_memory else None, bev_feats.device)
-        if self.gate_supervision_enabled and _use_memory:
+        gate_loss_active = self.gate_supervision_enabled and _use_memory and (not self.corruption_trained_no_gate_baseline)
+        if gate_loss_active:
             loss += gate_metrics['gate_loss']
 
         # update the log
