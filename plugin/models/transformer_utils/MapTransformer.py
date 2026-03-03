@@ -29,12 +29,13 @@ class SlotwiseTemporalGate(BaseModule):
         self.enabled = enabled
         self.embed_dims = embed_dims
         self.gate_mlp = nn.Sequential(
-            nn.Linear(embed_dims * 2 + 2, hidden_dims),
+            nn.Linear(embed_dims * 2 + 5, hidden_dims),
             nn.GELU(),
             nn.Linear(hidden_dims, 1),
         )
 
-    def forward(self, q_cur, mem_embeds, key_padding_mask=None):
+    def forward(self, q_cur, mem_embeds, key_padding_mask=None, valid_mem=None,
+                delta_t_int=None, age_rank_norm=None, clean_mem_embeds=None):
         """Build gated memory values.
 
         Args:
@@ -62,7 +63,28 @@ class SlotwiseTemporalGate(BaseModule):
 
         cos_key = nn.functional.cosine_similarity(q_expand, mem_expand, dim=-1, eps=1e-6).unsqueeze(-1)
         l2_val = torch.norm(q_expand - mem_expand, dim=-1, keepdim=True) / math.sqrt(self.embed_dims)
-        gate_inputs = torch.cat([q_expand, mem_expand, cos_key, l2_val], dim=-1)
+
+        if valid_mem is None:
+            valid_mem_bqt = q_expand.new_ones((bs, q_len, mem_len, 1))
+        else:
+            valid_mem_bqt = valid_mem[:, None, :, None].to(q_expand.dtype).expand(-1, q_len, -1, -1)
+
+        if delta_t_int is None:
+            delta_t_bqt = q_expand.new_zeros((bs, q_len, mem_len, 1))
+        else:
+            delta_t = delta_t_int.to(q_expand.dtype)
+            denom = torch.clamp(delta_t.max(dim=1, keepdim=True).values, min=1.0)
+            delta_t = delta_t / denom
+            delta_t_bqt = delta_t[:, None, :, None].expand(-1, q_len, -1, -1)
+
+        if age_rank_norm is None:
+            age_rank_bqt = q_expand.new_zeros((bs, q_len, mem_len, 1))
+        else:
+            age_rank_bqt = age_rank_norm[:, None, :, None].to(q_expand.dtype).expand(-1, q_len, -1, -1)
+
+        gate_inputs = torch.cat(
+            [q_expand, mem_expand, cos_key, l2_val, valid_mem_bqt, delta_t_bqt, age_rank_bqt],
+            dim=-1)
         alpha_bqt = torch.sigmoid(self.gate_mlp(gate_inputs).squeeze(-1))
 
         if key_padding_mask is not None:
@@ -380,10 +402,18 @@ class MapTransformerLayer(BaseTransformerLayer):
                                 mem_embeds = memory_bank.batch_mem_embeds_dict[b_i][:, valid_track_idx, :]
                                 mem_key_padding_mask = memory_bank.batch_key_padding_dict[b_i][valid_track_idx]
                                 mem_key_pos = memory_bank.batch_mem_relative_pe_dict[b_i][:, valid_track_idx]
+                                valid_mem = memory_bank.batch_valid_mem_dict[b_i][valid_track_idx]
+                                delta_t_int = memory_bank.batch_delta_t_int_dict[b_i][valid_track_idx]
+                                age_rank_norm = memory_bank.batch_age_rank_norm_dict[b_i][valid_track_idx]
+                                clean_mem_embeds = memory_bank.batch_mem_clean_embeds_dict[b_i][:, valid_track_idx, :]
                                 mem_values, alpha = self.temporal_gate(
                                     query_i[:, valid_track_idx],
                                     mem_embeds,
                                     key_padding_mask=mem_key_padding_mask,
+                                    valid_mem=valid_mem,
+                                    delta_t_int=delta_t_int,
+                                    age_rank_norm=age_rank_norm,
+                                    clean_mem_embeds=clean_mem_embeds,
                                 )
 
                                 query_i[:, valid_track_idx] = self.attentions[attn_index](

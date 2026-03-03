@@ -1,28 +1,53 @@
 # MVP Status
 
-- **Current status:** Milestone 1 complete (decoder insertion scaffold at pre-fusion memory path).
-- **Exact architectural path:** `plugin/models/transformer_utils/MapTransformer.py` → `MapTransformerLayer.forward` → `layer == 'cross_attn'` with `attn_index == 2` (memory branch) → `SlotwiseTemporalGate` scales memory **values** before memory attention output is fused via `query = query_memory + query_bev`.
-- **Identity-safe behavior:** Gate-disabled path returns `alpha=1` and uses ungated `mem_embeds` as values, preserving prior structure.
+- **Current status:** Milestone 2 complete (temporal feature plumbing + local read-view corruption paths for clean/C-full/C-tail, without gate loss).
+- **Milestone-2 scope note:** The implementation followed `docs/codex_mvp_plan.md` Milestone 2 tensor plumbing and additionally implemented the prompt-required read-path corruption outputs (`slot_corrupt_mask`, eligibility, clean/C-full/C-tail local views) while keeping canonical write behavior unchanged.
 
-## Files changed in Milestone 1
+## What changed in Milestone 2
 
-1. `plugin/models/transformer_utils/MapTransformer.py`
-   - Added `SlotwiseTemporalGate` scaffold module.
-   - Added per-layer gate instantiation in `MapTransformerLayer.__init__` via `temporal_gate_cfg`.
-   - Added pre-fusion callsite in memory cross-attention branch (`attn_index == 2`) to gate value path only.
-2. `plugin/configs/maptracker/nuscenes_newsplit/maptracker_nusc_newsplit_5frame_span10_stage2_warmup.py`
-3. `plugin/configs/maptracker/av2_oldsplit/maptracker_av2_oldsplit_5frame_span10_stage2_warmup.py`
-4. `plugin/configs/maptracker/av2_newsplit/maptracker_av2_100x50_newsplit_5frame_span10_stage2_warmup.py`
-5. `plugin/configs/maptracker/av2_newsplit/maptracker_av2_newsplit_5frame_span10_stage2_warmup.py`
-6. `plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage2_warmup.py`
-7. `plugin/configs/maptracker/nuscenes_newsplit/maptracker_nusc_newsplit_5frame_span10_stage3_joint_finetune.py`
-8. `plugin/configs/maptracker/av2_oldsplit/maptracker_av2_oldsplit_5frame_span10_stage3_joint_finetune.py`
-9. `plugin/configs/maptracker/av2_newsplit/maptracker_av2_100x50_newsplit_5frame_span10_stage3_joint_finetune.py`
-10. `plugin/configs/maptracker/av2_newsplit/maptracker_av2_newsplit_5frame_span10_stage3_joint_finetune.py`
-11. `plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py`
+1. `plugin/models/mapers/vector_memory.py`
+   - Extended read-path bookkeeping dictionaries to expose gate metadata and corruption labels:
+     - `batch_valid_mem_dict`
+     - `batch_delta_t_int_dict`
+     - `batch_age_rank_norm_dict`
+     - `batch_mem_clean_embeds_dict`
+     - `batch_slot_corrupt_mask_dict`
+     - `batch_slot_corrupt_eligible_dict`
+     - `batch_mem_corrupt_mode_dict`
+   - Added `_build_local_corrupted_read_view(...)` helper that builds local read tensors for:
+     - `clean`
+     - `c_full`
+     - `c_tail`
+   - Implemented missing-stale-source handling as **unsupervised/ineligible** (no fabricated replacement).
+   - Kept corruption strictly local to read path: canonical `mem_bank` and write/update logic are not modified by corruption construction.
+   - Added age/valid/temporal metadata construction in `trans_memory_bank(...)`:
+     - `valid_mem` from `key_padding_mask`
+     - `delta_t_int` from `relative_seq_idx`
+     - `age_rank_norm` from selected slot order.
 
-## Validation commands run
+2. `plugin/models/transformer_utils/MapTransformer.py`
+   - Extended `SlotwiseTemporalGate` input contract to accept and consume:
+     - `valid_mem`
+     - `delta_t_int`
+     - `age_rank_norm`
+     - `clean_mem_embeds` (exposed for gate-side use)
+   - Updated memory cross-attention read path (`attn_index == 2`) to forward the new metadata tensors from `VectorInstanceMemory`.
 
-1. `rg -n "class MapTransformerLayer|attn_index == 2|query_memory \+ query_bev|SlotwiseTemporalGate|alpha" plugin/models/transformer_utils/MapTransformer.py`
-2. `python -m py_compile plugin/models/transformer_utils/MapTransformer.py`
-3. `rg -n "temporal_gate|gate" plugin/configs/maptracker`
+## Validation run for Milestone 2
+
+1. ✅ Syntax/compile check passed:
+   - `python -m py_compile plugin/models/mapers/vector_memory.py plugin/models/transformer_utils/MapTransformer.py`
+
+2. ⚠️ Targeted runtime tensor/mask checks were prepared but blocked by environment dependency:
+   - `python - <<'PY' ...` (failed with `ModuleNotFoundError: No module named 'torch'`)
+
+3. ✅ Static verification by code inspection confirms:
+   - Corruption is read-path local and uses detached local views.
+   - Missing stale sources remain ineligible (no fabricated source tensors).
+   - Canonical memory write path remains in `update_memory(...)` and was not altered.
+
+## Remaining for Milestone 3
+
+- Integrate corruption mode/onset controls from training configuration paths (rather than metadata defaults).
+- Thread corruption labels/eligibility through full training outputs as needed for downstream gate supervision wiring.
+- Add end-to-end runtime validation in an environment with `torch` available (including explicit C-full/C-tail behavior checks and canonical-memory isolation assertions at runtime).
