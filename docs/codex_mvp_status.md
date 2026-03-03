@@ -1,53 +1,35 @@
 # MVP Status
 
-- **Current status:** Milestone 2 complete (temporal feature plumbing + local read-view corruption paths for clean/C-full/C-tail, without gate loss).
-- **Milestone-2 scope note:** The implementation followed `docs/codex_mvp_plan.md` Milestone 2 tensor plumbing and additionally implemented the prompt-required read-path corruption outputs (`slot_corrupt_mask`, eligibility, clean/C-full/C-tail local views) while keeping canonical write behavior unchanged.
+- **Current status:** Prompt-scoped Milestone 3 complete for temporal gate behavior and pre-fusion integration in decoder memory attention.
+- **Plan mismatch note:** `docs/codex_mvp_plan.md` labels Milestone 3 as stale corruption engine, while this prompt required SlotwiseTemporalGate completion and pre-fusion wiring checks. This update follows the prompt-scoped requirements with minimal code changes.
 
-## What changed in Milestone 2
+## What changed in this milestone
 
-1. `plugin/models/mapers/vector_memory.py`
-   - Extended read-path bookkeeping dictionaries to expose gate metadata and corruption labels:
-     - `batch_valid_mem_dict`
-     - `batch_delta_t_int_dict`
-     - `batch_age_rank_norm_dict`
-     - `batch_mem_clean_embeds_dict`
-     - `batch_slot_corrupt_mask_dict`
-     - `batch_slot_corrupt_eligible_dict`
-     - `batch_mem_corrupt_mode_dict`
-   - Added `_build_local_corrupted_read_view(...)` helper that builds local read tensors for:
-     - `clean`
-     - `c_full`
-     - `c_tail`
-   - Implemented missing-stale-source handling as **unsupervised/ineligible** (no fabricated replacement).
-   - Kept corruption strictly local to read path: canonical `mem_bank` and write/update logic are not modified by corruption construction.
-   - Added age/valid/temporal metadata construction in `trans_memory_bank(...)`:
-     - `valid_mem` from `key_padding_mask`
-     - `delta_t_int` from `relative_seq_idx`
-     - `age_rank_norm` from selected slot order.
+1. `plugin/models/transformer_utils/MapTransformer.py`
+   - Updated `SlotwiseTemporalGate.forward(...)` to accept an explicit `eligible_mask` and enforce eligibility-only gating.
+   - Ensured `alpha_soft` is explicitly zeroed for ineligible pairs (mask-driven, including key padding).
+   - Kept gating as value scaling only; key tensors remain unchanged in memory cross-attention.
+   - Preserved scalar alpha per eligible query-slot pair and applied value scaling by broadcasting alpha across embedding/head projections.
+   - In pre-fusion `MapTransformerLayer.forward(...)` memory branch (`attn_index == 2`):
+     - Applied gating after BEV-to-vector cross attention and before fusion (`query = query_memory + query_bev`).
+     - Ensured new/non-tracked queries do not consume historical memory (only `valid_track_idx` are processed).
+     - Ensured padded queries contribute no memory update (masked out via `query_key_padding_mask`, leaving zero memory contribution).
+   - Exposed gate outputs for downstream use/logging on the memory object:
+     - `memory_bank.batch_alpha_soft_dict[b_i]`
+     - `memory_bank.batch_v_mem_soft_dict[b_i]`
 
-2. `plugin/models/transformer_utils/MapTransformer.py`
-   - Extended `SlotwiseTemporalGate` input contract to accept and consume:
-     - `valid_mem`
-     - `delta_t_int`
-     - `age_rank_norm`
-     - `clean_mem_embeds` (exposed for gate-side use)
-   - Updated memory cross-attention read path (`attn_index == 2`) to forward the new metadata tensors from `VectorInstanceMemory`.
-
-## Validation run for Milestone 2
+## Validation run for this milestone
 
 1. ✅ Syntax/compile check passed:
-   - `python -m py_compile plugin/models/mapers/vector_memory.py plugin/models/transformer_utils/MapTransformer.py`
+   - `python -m py_compile plugin/models/transformer_utils/MapTransformer.py`
 
-2. ⚠️ Targeted runtime tensor/mask checks were prepared but blocked by environment dependency:
-   - `python - <<'PY' ...` (failed with `ModuleNotFoundError: No module named 'torch'`)
+2. ⚠️ Runtime validations blocked by missing dependency (`torch`) in this environment:
+   - one-alpha parity check (`alpha = 1` reproduces ungated historical path)
+   - zero-alpha suppression check (`alpha = 0` removes historical contribution)
+   - no-history check for new/padded queries
+   - dimension smoke test for gate path tensors
 
-3. ✅ Static verification by code inspection confirms:
-   - Corruption is read-path local and uses detached local views.
-   - Missing stale sources remain ineligible (no fabricated source tensors).
-   - Canonical memory write path remains in `update_memory(...)` and was not altered.
-
-## Remaining for Milestone 3
-
-- Integrate corruption mode/onset controls from training configuration paths (rather than metadata defaults).
-- Thread corruption labels/eligibility through full training outputs as needed for downstream gate supervision wiring.
-- Add end-to-end runtime validation in an environment with `torch` available (including explicit C-full/C-tail behavior checks and canonical-memory isolation assertions at runtime).
+3. ✅ Strongest available static verification performed:
+   - Confirmed pre-fusion insertion point and gating callsite in memory cross-attention path.
+   - Confirmed explicit eligibility masking and ineligible-alpha zeroing logic.
+   - Confirmed keys remain ungated while values are scaled.
