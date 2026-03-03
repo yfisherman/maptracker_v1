@@ -4,6 +4,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import random
 
 from mmdet3d.models.builder import (build_backbone, build_head)
 
@@ -41,6 +43,7 @@ class MapTracker(BaseMapper):
                  use_memory=False,
                  mem_len=None,
                  mem_warmup_iters=-1,
+                 mvp_temporal_gate_cfg=None,
                  **kwargs):
         super().__init__()
 
@@ -63,6 +66,22 @@ class MapTracker(BaseMapper):
         self.track_fp_aug = track_fp_aug
         self.use_memory = use_memory
         self.mem_warmup_iters = mem_warmup_iters
+        self.mvp_temporal_gate_cfg = mvp_temporal_gate_cfg or {}
+        self.gate_loss_weights = self.mvp_temporal_gate_cfg.get(
+            'gate_loss_weights', dict(lambda_close=1.0, lambda_open=0.5, lambda_clean=0.1))
+        self.gate_supervision_enabled = bool(self.mvp_temporal_gate_cfg.get('gate_supervision_enabled', False))
+        self.enable_clean_open_loss = bool(self.mvp_temporal_gate_cfg.get('enable_clean_open_loss', True))
+        self.corruption_probs = self.mvp_temporal_gate_cfg.get(
+            'corruption_probs', dict(clean=1.0, c_full=0.0, c_tail=0.0))
+        self.stale_offsets = self.mvp_temporal_gate_cfg.get('stale_offsets', [4])
+        self.corruption_onset = int(self.mvp_temporal_gate_cfg.get('corruption_onset', 1))
+        self.c_tail_keep_recent = int(self.mvp_temporal_gate_cfg.get('c_tail_keep_recent', 1))
+        self.clean_validation_only = bool(self.mvp_temporal_gate_cfg.get('clean_validation_only', False))
+        self.contradiction_suite_enabled = bool(self.mvp_temporal_gate_cfg.get('run_contradiction_suite', False))
+        self.corruption_trained_no_gate_baseline = bool(
+            self.mvp_temporal_gate_cfg.get('corruption_trained_no_gate_baseline', False))
+        self.freeze_stage = self.mvp_temporal_gate_cfg.get('freeze_stage', None)
+        self.unfreeze_stage = self.mvp_temporal_gate_cfg.get('unfreeze_stage', None)
 
         # the track query propagation module, using relative pose
         c_dim = 7 # quaternion for rotation (4) + translation (3)
@@ -339,6 +358,128 @@ class MapTracker(BaseMapper):
             all_history_coord.append(history_coord)
         
         return all_history_curr2prev, all_history_prev2curr, all_history_coord
+
+    def _sample_corruption_mode(self):
+        probs = {
+            'clean': float(self.corruption_probs.get('clean', 0.0)),
+            'c_full': float(self.corruption_probs.get('c_full', 0.0)),
+            'c_tail': float(self.corruption_probs.get('c_tail', 0.0)),
+        }
+        total = sum(max(v, 0.0) for v in probs.values())
+        if total <= 0:
+            return 'clean'
+        r = random.random() * total
+        cdf = 0.0
+        for mode in ['clean', 'c_full', 'c_tail']:
+            cdf += max(probs[mode], 0.0)
+            if r <= cdf:
+                return mode
+        return 'clean'
+
+    def _resolve_stale_offset(self):
+        if isinstance(self.stale_offsets, (list, tuple)) and len(self.stale_offsets) > 0:
+            return int(random.choice(self.stale_offsets))
+        return int(self.stale_offsets) if isinstance(self.stale_offsets, (int, float)) else 4
+
+    def _inject_memory_corruption_meta(self, img_metas, corruption_mode, stale_offset):
+        for meta in img_metas:
+            meta['memory_corruption_mode'] = corruption_mode
+            meta['memory_stale_offset'] = int(stale_offset)
+            meta['memory_c_tail_keep_recent'] = self.c_tail_keep_recent
+            meta['memory_corruption_onset'] = self.corruption_onset
+
+    def _compute_gate_supervision(self, memory_bank, device):
+        zero = torch.zeros((1,), device=device).squeeze(0)
+        out = {
+            'gate_loss': zero,
+            'L_close': zero,
+            'L_open': zero,
+            'L_clean': zero,
+            'alpha_mean_affected': zero,
+            'alpha_mean_preserved_recent': zero,
+            'alpha_mean_clean_recent': zero,
+            'affected_batch_fraction': zero,
+            'historical_path_strength_ratio_clean': zero,
+        }
+
+        if memory_bank is None or not hasattr(memory_bank, 'batch_alpha_soft_dict'):
+            return out
+
+        affected_vals, preserved_vals, clean_vals = [], [], []
+        close_terms, open_terms, clean_terms = [], [], []
+        affected_non_empty = 0
+        clean_ratio_vals = []
+        total_batches = max(len(memory_bank.batch_alpha_soft_dict), 1)
+
+        for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
+            valid_track_idx = memory_bank.valid_track_idx.get(b_i, None)
+            if valid_track_idx is None or len(valid_track_idx) == 0:
+                continue
+
+            valid_track_idx = valid_track_idx.to(alpha_full.device)
+            T = alpha_full.shape[1] if alpha_full.ndim == 2 else 0
+            if T == 0:
+                continue
+
+            corrupt = memory_bank.batch_slot_corrupt_mask_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            eligible = memory_bank.batch_slot_corrupt_eligible_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            valid_mem = memory_bank.batch_valid_mem_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            age_rank = memory_bank.batch_age_rank_norm_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            mode = memory_bank.batch_mem_corrupt_mode_dict.get(b_i, 'clean')
+
+            alpha_valid = alpha_full[valid_track_idx]
+            affected = eligible & corrupt
+
+            if affected.any():
+                affected_non_empty += 1
+                a = alpha_valid[affected]
+                affected_vals.append(a)
+                close_terms.append(F.binary_cross_entropy(a, torch.zeros_like(a)))
+
+            recency_ref = age_rank.max(dim=1, keepdim=True).values
+            preserved_recent = valid_mem & (~corrupt) & (age_rank >= recency_ref)
+            if preserved_recent.any():
+                p = alpha_valid[preserved_recent]
+                preserved_vals.append(p)
+                open_terms.append(F.binary_cross_entropy(p, torch.ones_like(p)))
+
+            if str(mode).lower() == 'clean':
+                clean_recent = valid_mem & (age_rank >= recency_ref)
+                if clean_recent.any():
+                    c = alpha_valid[clean_recent]
+                    clean_vals.append(c)
+                    if self.enable_clean_open_loss:
+                        clean_terms.append(F.binary_cross_entropy(c, torch.ones_like(c)))
+
+                if hasattr(memory_bank, 'batch_v_mem_soft_dict') and b_i in memory_bank.batch_v_mem_soft_dict:
+                    v_soft = memory_bank.batch_v_mem_soft_dict[b_i]
+                    v_clean = memory_bank.batch_mem_clean_embeds_dict[b_i][:, valid_track_idx, :]
+                    denom = v_clean.abs().mean().clamp(min=1e-6)
+                    clean_ratio_vals.append((v_soft.abs().mean() / denom))
+
+        lambda_close = float(self.gate_loss_weights.get('lambda_close', 1.0))
+        lambda_open = float(self.gate_loss_weights.get('lambda_open', 0.5))
+        lambda_clean = float(self.gate_loss_weights.get('lambda_clean', 0.1))
+
+        l_close = torch.stack(close_terms).mean() if close_terms else zero
+        l_open = torch.stack(open_terms).mean() if open_terms else zero
+        l_clean = torch.stack(clean_terms).mean() if clean_terms else zero
+        gate_loss = lambda_close * l_close + lambda_open * l_open + lambda_clean * l_clean
+
+        out.update({
+            'gate_loss': gate_loss,
+            'L_close': l_close,
+            'L_open': l_open,
+            'L_clean': l_clean,
+            'alpha_mean_affected': torch.cat(affected_vals).mean() if affected_vals else zero,
+            'alpha_mean_preserved_recent': torch.cat(preserved_vals).mean() if preserved_vals else zero,
+            'alpha_mean_clean_recent': torch.cat(clean_vals).mean() if clean_vals else zero,
+            'affected_batch_fraction': zero + float(affected_non_empty) / float(total_batches),
+            'historical_path_strength_ratio_clean': (
+                torch.stack(clean_ratio_vals).mean() if clean_ratio_vals else zero),
+        })
+
+        return out
         
 
     def forward_train(self, img, vectors, semantic_mask, points=None, img_metas=None, all_prev_data=None,
@@ -364,7 +505,7 @@ class MapTracker(BaseMapper):
         bs = img.shape[0]
 
         _use_memory = self.use_memory and self.num_iter > self.mem_warmup_iters
-        
+
         if all_prev_data is not None:
             num_prev_frames = len(all_prev_data)        
             all_gts_prev, all_img_prev, all_img_metas_prev, all_semantic_mask_prev  = [], [], [], []
@@ -372,6 +513,7 @@ class MapTracker(BaseMapper):
                 gts_prev, img_prev, img_metas_prev, valid_idx_prev, _ = self.batch_data(
                     prev_data['vectors'], prev_data['img'], prev_data['img_metas'], img.device      
                 )
+                self._inject_memory_corruption_meta(img_metas_prev, clip_corruption_mode, clip_stale_offset)
                 all_gts_prev.append(gts_prev)
                 all_img_prev.append(img_prev)
                 all_img_metas_prev.append(img_metas_prev)
@@ -385,6 +527,12 @@ class MapTracker(BaseMapper):
             backprop_backbone_ids = [0, num_prev_frames] # first and last frame train the backbone (bev pretrain)
         else:
             backprop_backbone_ids = [num_prev_frames, ] # only the last frame trains the backbone (all other settings)
+
+        clip_corruption_mode = 'clean' if self.clean_validation_only else self._sample_corruption_mode()
+        if self.corruption_trained_no_gate_baseline:
+            clip_corruption_mode = self._sample_corruption_mode()
+        clip_stale_offset = self._resolve_stale_offset()
+        self._inject_memory_corruption_meta(img_metas, clip_corruption_mode, clip_stale_offset)
 
         track_query_info = None
         all_loss_dict_prev = []
@@ -564,7 +712,11 @@ class MapTracker(BaseMapper):
         for trans_loss_dict_t in all_trans_loss:
             trans_loss_t = trans_loss_dict_t['f_trans'] + trans_loss_dict_t['b_trans']
             loss += trans_loss_t
-        
+
+        gate_metrics = self._compute_gate_supervision(self.memory_bank if _use_memory else None, bev_feats.device)
+        if self.gate_supervision_enabled and _use_memory:
+            loss += gate_metrics['gate_loss']
+
         # update the log
         log_vars = {k: v.item() for k, v in loss_dict.items()}
 
@@ -578,7 +730,20 @@ class MapTracker(BaseMapper):
         for t, trans_loss_dict_t in enumerate(all_trans_loss):
             log_vars_t = {k+'_t{}'.format(t): v.item() for k, v in trans_loss_dict_t.items()}
             log_vars.update(log_vars_t)
-        
+
+        gate_log = {
+            'gate_loss': gate_metrics['gate_loss'].item(),
+            'L_close': gate_metrics['L_close'].item(),
+            'L_open': gate_metrics['L_open'].item(),
+            'L_clean': gate_metrics['L_clean'].item(),
+            'alpha_mean_affected': gate_metrics['alpha_mean_affected'].item(),
+            'alpha_mean_preserved_recent': gate_metrics['alpha_mean_preserved_recent'].item(),
+            'alpha_mean_clean_recent': gate_metrics['alpha_mean_clean_recent'].item(),
+            'affected_batch_fraction': gate_metrics['affected_batch_fraction'].item(),
+            'historical_path_strength_ratio_clean': gate_metrics['historical_path_strength_ratio_clean'].item(),
+        }
+        log_vars.update(gate_log)
+
         log_vars.update({'total': loss.item()})
         num_sample = img.size(0)
         return loss, log_vars, num_sample
