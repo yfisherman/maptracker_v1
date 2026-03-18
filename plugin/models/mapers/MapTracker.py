@@ -299,6 +299,7 @@ class MapTracker(BaseMapper):
                 'b_trans': back_trans_loss,
             }
             return trans_loss_dict
+        return None
     
     def add_noise_to_pose(self, rot, trans):
         rot_euler = rot.as_euler('zxy')
@@ -1181,19 +1182,21 @@ class MapTracker(BaseMapper):
     
     def _denorm_lines(self, line_pts):
         """from (0,1) to the BEV space in meters"""
-        line_pts[..., 0] = line_pts[..., 0] * self.roi_size[0] \
-                        - self.roi_size[0] / 2 
-        line_pts[..., 1] = line_pts[..., 1] * self.roi_size[1] \
-                        - self.roi_size[1] / 2 
-        return line_pts
+        out = line_pts.clone()
+        out[..., 0] = out[..., 0] * self.roi_size[0] \
+                    - self.roi_size[0] / 2 
+        out[..., 1] = out[..., 1] * self.roi_size[1] \
+                    - self.roi_size[1] / 2 
+        return out
 
     def _norm_lines(self, line_pts):
         """from the BEV space in meters to (0,1) """
-        line_pts[..., 0] = (line_pts[..., 0] + self.roi_size[0] / 2) \
-                                        / self.roi_size[0] 
-        line_pts[..., 1] = (line_pts[..., 1] + self.roi_size[1] / 2) \
-                                        / self.roi_size[1] 
-        return line_pts
+        out = line_pts.clone()
+        out[..., 0] = (out[..., 0] + self.roi_size[0] / 2) \
+                                    / self.roi_size[0] 
+        out[..., 1] = (out[..., 1] + self.roi_size[1] / 2) \
+                                    / self.roi_size[1] 
+        return out
 
     def _process_track_query_info(self, track_info):
         bs = len(track_info)
