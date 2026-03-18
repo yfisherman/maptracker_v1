@@ -446,7 +446,10 @@ class MapTracker(BaseMapper):
         total_batches = max(len(memory_bank.batch_alpha_soft_dict), 1)
 
         for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
-            valid_track_idx = memory_bank.valid_track_idx.get(b_i, None)
+            valid_track_list = getattr(memory_bank, 'valid_track_idx', None)
+            if valid_track_list is None or b_i >= len(valid_track_list):
+                continue
+            valid_track_idx = valid_track_list[b_i]
             if valid_track_idx is None or len(valid_track_idx) == 0:
                 continue
 
@@ -583,6 +586,7 @@ class MapTracker(BaseMapper):
         track_query_info = None
         all_loss_dict_prev = []
         all_trans_loss = []
+        all_gate_losses = []
         all_outputs_prev = []
 
         self.tracked_query_length = {}
@@ -675,6 +679,11 @@ class MapTracker(BaseMapper):
                                         return_matching=True)
                 all_outputs_prev.append(outputs_prev)
 
+                if t > 0 and _use_memory and self.gate_supervision_enabled and \
+                        (not self.corruption_trained_no_gate_baseline):
+                    frame_gate_metrics = self._compute_gate_supervision(self.memory_bank, bev_feats.device)
+                    all_gate_losses.append(frame_gate_metrics['gate_loss'])
+
                 if t > 0:
                     all_trans_loss.append(trans_loss_dict)
 
@@ -763,8 +772,11 @@ class MapTracker(BaseMapper):
 
         gate_metrics = self._compute_gate_supervision(self.memory_bank if _use_memory else None, bev_feats.device)
         gate_loss_active = self.gate_supervision_enabled and _use_memory and (not self.corruption_trained_no_gate_baseline)
+        clip_gate_loss = gate_metrics['gate_loss'].new_zeros(())
         if gate_loss_active:
-            loss += gate_metrics['gate_loss']
+            all_gate_losses.append(gate_metrics['gate_loss'])
+            clip_gate_loss = torch.stack(all_gate_losses).mean()
+            loss += clip_gate_loss
 
         # update the log
         log_vars = {k: v.item() for k, v in loss_dict.items()}
@@ -781,7 +793,8 @@ class MapTracker(BaseMapper):
             log_vars.update(log_vars_t)
 
         gate_log = {
-            'gate_loss': gate_metrics['gate_loss'].item(),
+            'gate_loss': clip_gate_loss.item(),
+            'gate_loss_final_frame': gate_metrics['gate_loss'].item(),
             'L_close': gate_metrics['L_close'].item(),
             'L_open': gate_metrics['L_open'].item(),
             'L_clean': gate_metrics['L_clean'].item(),
