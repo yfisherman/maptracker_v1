@@ -342,6 +342,7 @@ class MapTransformerLayer(BaseTransformerLayer):
         attn_index = 0
         ffn_index = 0
         identity = query
+        query_bev = None
         if attn_masks is None:
             attn_masks = [None for _ in range(self.num_attn)]
         elif isinstance(attn_masks, torch.Tensor):
@@ -396,8 +397,14 @@ class MapTransformerLayer(BaseTransformerLayer):
                 else:
                     # Memory cross attention
                     assert attn_index == 2
+                    assert query_bev is not None, (
+                        'Memory cross-attention requires BEV-updated query (query_bev) '
+                        'from the previous cross-attn step.')
+                    assert query_bev.shape == query.shape, (
+                        f'query_bev shape {query_bev.shape} must match query shape {query.shape} '
+                        'before memory cross-attention.')
                     if memory_bank is not None:
-                        bs = query.shape[1]
+                        bs = query_bev.shape[1]
                         if not hasattr(memory_bank, 'batch_alpha_soft_dict'):
                             memory_bank.batch_alpha_soft_dict = {}
                         if not hasattr(memory_bank, 'batch_v_mem_soft_dict'):
@@ -405,7 +412,7 @@ class MapTransformerLayer(BaseTransformerLayer):
                         query_i_list = []
                         for b_i in range(bs):
                             valid_track_idx = all_valid_track_idx[b_i] 
-                            query_i = query[:, b_i].clone()
+                            query_i = query_bev[:, b_i].clone()
                             query_i = query_i[None,:]
                             query_i_memory = torch.zeros_like(query_i)
 
