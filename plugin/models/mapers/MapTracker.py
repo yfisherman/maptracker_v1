@@ -514,6 +514,13 @@ class MapTracker(BaseMapper):
         })
 
         return out
+
+    def _sync_memory_bank_track_metadata(self, memory_bank):
+        if memory_bank is None:
+            return
+        memory_bank.batch_tracked_query_len = {
+            b_i: int(track_len) for b_i, track_len in self.tracked_query_length.items()
+        }
         
 
     def forward_train(self, img, vectors, semantic_mask, points=None, img_metas=None, all_prev_data=None,
@@ -654,6 +661,7 @@ class MapTracker(BaseMapper):
                     memory_bank = None
                 else:
                     memory_bank = self.memory_bank if _use_memory else None
+                    self._sync_memory_bank_track_metadata(memory_bank)
                 # 1). Compute the loss for prev frame
                 # 2). Get the matching results for computing the track query to next frame
                 loss_dict_prev, outputs_prev, prev_inds_list, prev_gt_inds_list, prev_matched_reg_cost, \
@@ -724,6 +732,7 @@ class MapTracker(BaseMapper):
         
         if not self.skip_vector_head:
             memory_bank = self.memory_bank if _use_memory else None
+            self._sync_memory_bank_track_metadata(memory_bank)
             # 3. run the head again and compute the loss for the second frame
             preds_list, loss_dict, det_match_idxs, det_match_gt_idxs, gt_list = self.head(
                 bev_features=bev_feats, 
@@ -846,6 +855,7 @@ class MapTracker(BaseMapper):
 
             # Run the vector map decoder with instance-level memory
             memory_bank = self.memory_bank if self.use_memory else None
+            self._sync_memory_bank_track_metadata(memory_bank)
             preds_list = self.head(bev_feats, img_metas=img_metas, 
                         track_query_info=track_query_info, memory_bank=memory_bank,
                         return_loss=False)

@@ -8,6 +8,7 @@ except Exception:
 
 try:
     from plugin.models.transformer_utils.MapTransformer import SlotwiseTemporalGate
+    from plugin.models.transformer_utils.MapTransformer import MapTransformerLayer
     GATE_OK = TORCH_OK
 except Exception:
     GATE_OK = False
@@ -24,28 +25,28 @@ class TestTemporalGateMVP(unittest.TestCase):
     @unittest.skipUnless(GATE_OK, 'gate/runtime deps unavailable')
     def test_dimension_smoke(self):
         gate = SlotwiseTemporalGate(embed_dims=16, enabled=True)
-        q = torch.randn(4, 2, 16)
-        mem = torch.randn(3, 2, 16)
+        q = torch.randn(1, 8, 16)
+        mem = torch.randn(3, 8, 16)
         values, alpha = gate(q, mem)
         self.assertEqual(values.shape, mem.shape)
-        self.assertEqual(alpha.shape, (4, 2, 3))
+        self.assertEqual(alpha.shape, (1, 8, 3))
         self.assertTrue(torch.isfinite(values).all().item())
         self.assertTrue(torch.isfinite(alpha).all().item())
 
     @unittest.skipUnless(GATE_OK, 'gate/runtime deps unavailable')
     def test_no_history(self):
         gate = SlotwiseTemporalGate(embed_dims=8, enabled=True)
-        q = torch.randn(2, 1, 8)
+        q = torch.randn(1, 1, 8)
         mem = torch.randn(0, 1, 8)
         values, alpha = gate(q, mem)
         self.assertEqual(values.shape[0], 0)
-        self.assertEqual(alpha.shape, (2, 1, 0))
+        self.assertEqual(alpha.shape, (1, 1, 0))
 
     @unittest.skipUnless(GATE_OK, 'gate/runtime deps unavailable')
     def test_one_alpha_parity(self):
         gate = SlotwiseTemporalGate(embed_dims=8, enabled=False)
-        q = torch.randn(3, 1, 8)
-        mem = torch.randn(4, 1, 8)
+        q = torch.randn(1, 3, 8)
+        mem = torch.randn(4, 3, 8)
         values, alpha = gate(q, mem)
         self.assertTrue(torch.allclose(values, mem))
         self.assertTrue(torch.allclose(alpha, torch.ones_like(alpha)))
@@ -56,13 +57,27 @@ class TestTemporalGateMVP(unittest.TestCase):
         with torch.no_grad():
             gate.gate_mlp[-1].weight.zero_()
             gate.gate_mlp[-1].bias.fill_(-100.0)
-        q = torch.randn(3, 1, 8)
-        mem = torch.randn(4, 1, 8)
+        q = torch.randn(1, 4, 8)
+        mem = torch.randn(4, 4, 8)
         values, alpha = gate(q, mem)
         self.assertLess(alpha.max().item(), 1e-4)
         self.assertLess(values.abs().max().item(), 1e-4)
         self.assertTrue(torch.isfinite(values).all().item())
         self.assertTrue(torch.isfinite(alpha).all().item())
+
+    @unittest.skipUnless(GATE_OK, 'gate/runtime deps unavailable')
+    def test_gate_raises_when_q_len_not_one(self):
+        gate = SlotwiseTemporalGate(embed_dims=8, enabled=True)
+        q = torch.randn(2, 1, 8)
+        mem = torch.randn(3, 1, 8)
+        with self.assertRaisesRegex(AssertionError, 'q_len == 1'):
+            gate(q, mem)
+
+    @unittest.skipUnless(GATE_OK, 'gate/runtime deps unavailable')
+    def test_track_idx_boundary_guard_raises(self):
+        valid_track_idx = torch.tensor([0, 2], dtype=torch.long)
+        with self.assertRaisesRegex(AssertionError, 'tracked-query boundary'):
+            MapTransformerLayer._assert_valid_track_idx_in_bounds(valid_track_idx, track_len=2, batch_i=0)
 
     @unittest.skipUnless(VECTOR_MEMORY_OK, 'vector memory/runtime deps unavailable')
     def test_corrupted_read_isolation(self):

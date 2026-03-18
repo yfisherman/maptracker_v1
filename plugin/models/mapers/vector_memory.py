@@ -88,6 +88,7 @@ class VectorInstanceMemory(nn.Module):
         self.batch_age_rank_norm_dict = {}
         self.batch_slot_corrupt_mask_dict = {}
         self.batch_slot_corrupt_eligible_dict = {}
+        self.batch_tracked_query_len = {}
         self.curr_rot = torch.zeros((bs,3,3),dtype=torch.float32).cuda()
         self.curr_trans = torch.zeros((bs,3),dtype=torch.float32).cuda()
         self.gt_lines_info = {}
@@ -195,6 +196,7 @@ class VectorInstanceMemory(nn.Module):
         self.batch_age_rank_norm_dict = {}
         self.batch_slot_corrupt_mask_dict = {}
         self.batch_slot_corrupt_eligible_dict = {}
+        self.batch_tracked_query_len = {}
 
     @staticmethod
     def _build_local_corrupted_read_view(mem_embeds_clean, canonical_mem_embeds, all_select_indices, key_padding_mask,

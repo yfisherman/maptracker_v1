@@ -65,6 +65,10 @@ class SlotwiseTemporalGate(BaseModule):
             alpha = alpha * eligible_mask.permute(1, 0, 2).to(dtype=alpha.dtype)
             return mem_embeds, alpha
 
+        assert q_len == 1, (
+            'SlotwiseTemporalGate expects the packed memory-branch call path with '
+            f'q_len == 1, got q_len={q_len}.')
+
         q_bt = q_cur.permute(1, 0, 2)
         mem_bt = mem_embeds.permute(1, 0, 2)
         q_bt_norm = nn.functional.layer_norm(q_bt, (self.embed_dims,))
@@ -291,6 +295,15 @@ class MapTransformerLayer(BaseTransformerLayer):
             enabled=gate_enabled,
         )
 
+    @staticmethod
+    def _assert_valid_track_idx_in_bounds(valid_track_idx, track_len, batch_i):
+        if len(valid_track_idx) == 0:
+            return
+        assert (valid_track_idx < track_len).all(), (
+            f'valid_track_idx exceeds tracked-query boundary for batch {batch_i}: '
+            f'max_valid_idx={int(valid_track_idx.max().item())}, '
+            f'track_len={int(track_len)}.')
+
     def forward(self,
                 query,
                 key=None,
@@ -419,6 +432,10 @@ class MapTransformerLayer(BaseTransformerLayer):
                             query_i_memory = torch.zeros_like(query_i)
 
                             if len(valid_track_idx) != 0:
+                                if hasattr(memory_bank, 'batch_tracked_query_len') and \
+                                        b_i in memory_bank.batch_tracked_query_len:
+                                    track_len = int(memory_bank.batch_tracked_query_len[b_i])
+                                    self._assert_valid_track_idx_in_bounds(valid_track_idx, track_len, b_i)
                                 mem_embeds = memory_bank.batch_mem_embeds_dict[b_i][:, valid_track_idx, :]
                                 mem_key_padding_mask = memory_bank.batch_key_padding_dict[b_i][valid_track_idx]
                                 mem_key_pos = memory_bank.batch_mem_relative_pe_dict[b_i][:, valid_track_idx]
