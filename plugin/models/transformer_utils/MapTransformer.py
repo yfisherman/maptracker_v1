@@ -67,9 +67,11 @@ class SlotwiseTemporalGate(BaseModule):
 
         q_bt = q_cur.permute(1, 0, 2)
         mem_bt = mem_embeds.permute(1, 0, 2)
+        q_bt_norm = nn.functional.layer_norm(q_bt, (self.embed_dims,))
+        mem_bt_norm = nn.functional.layer_norm(mem_bt, (self.embed_dims,))
 
-        q_expand = q_bt[:, :, None, :].expand(-1, -1, mem_len, -1)
-        mem_expand = mem_bt[:, None, :, :].expand(-1, q_len, -1, -1)
+        q_expand = q_bt_norm[:, :, None, :].expand(-1, -1, mem_len, -1)
+        mem_expand = mem_bt_norm[:, None, :, :].expand(-1, q_len, -1, -1)
 
         cos_key = nn.functional.cosine_similarity(q_expand, mem_expand, dim=-1, eps=1e-6).unsqueeze(-1)
         l2_val = torch.norm(q_expand - mem_expand, dim=-1, keepdim=True) / math.sqrt(self.embed_dims)

@@ -29,6 +29,8 @@ class TestTemporalGateMVP(unittest.TestCase):
         values, alpha = gate(q, mem)
         self.assertEqual(values.shape, mem.shape)
         self.assertEqual(alpha.shape, (4, 2, 3))
+        self.assertTrue(torch.isfinite(values).all().item())
+        self.assertTrue(torch.isfinite(alpha).all().item())
 
     @unittest.skipUnless(GATE_OK, 'gate/runtime deps unavailable')
     def test_no_history(self):
@@ -59,6 +61,8 @@ class TestTemporalGateMVP(unittest.TestCase):
         values, alpha = gate(q, mem)
         self.assertLess(alpha.max().item(), 1e-4)
         self.assertLess(values.abs().max().item(), 1e-4)
+        self.assertTrue(torch.isfinite(values).all().item())
+        self.assertTrue(torch.isfinite(alpha).all().item())
 
     @unittest.skipUnless(VECTOR_MEMORY_OK, 'vector memory/runtime deps unavailable')
     def test_corrupted_read_isolation(self):
