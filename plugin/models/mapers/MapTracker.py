@@ -83,6 +83,10 @@ class MapTracker(BaseMapper):
         self.freeze_stage = self.mvp_temporal_gate_cfg.get('freeze_stage', None)
         self.unfreeze_stage = self.mvp_temporal_gate_cfg.get('unfreeze_stage', None)
 
+        # Baseline parity guard: corruption-trained no-gate runs must never
+        # keep temporal gate forward accidentally enabled.
+        self._enforce_no_gate_baseline_runtime()
+
         # the track query propagation module, using relative pose
         c_dim = 7 # quaternion for rotation (4) + translation (3)
         self.query_propagate = MotionMLP(c_dim=c_dim, f_dim=self.head.embed_dims, identity=True)
@@ -388,6 +392,36 @@ class MapTracker(BaseMapper):
             meta['memory_c_tail_keep_recent'] = self.c_tail_keep_recent
             meta['memory_corruption_onset'] = self.corruption_onset
 
+    def _iter_decoder_temporal_gates(self):
+        """Yield temporal-gate modules wired into decoder memory path."""
+        decoder = getattr(getattr(self.head, 'transformer', None), 'decoder', None)
+        if decoder is None:
+            return
+        layers = getattr(decoder, 'layers', None)
+        if layers is None:
+            return
+        for layer in layers:
+            temporal_gate = getattr(layer, 'temporal_gate', None)
+            if temporal_gate is not None:
+                yield temporal_gate
+
+    def _enforce_no_gate_baseline_runtime(self):
+        """Force-disable and verify temporal-gate forward in no-gate baseline."""
+        if not self.corruption_trained_no_gate_baseline:
+            return
+
+        temporal_gates = list(self._iter_decoder_temporal_gates())
+        assert len(temporal_gates) > 0, (
+            'corruption_trained_no_gate_baseline=True but no decoder temporal_gate '
+            'modules were found in the current model graph.')
+
+        for gate in temporal_gates:
+            gate.enabled = False
+
+        assert all((not gate.enabled) for gate in temporal_gates), (
+            'No-gate baseline parity check failed: at least one temporal_gate '
+            'remains enabled.')
+
     def _compute_gate_supervision(self, memory_bank, device):
         zero = torch.zeros((1,), device=device).squeeze(0)
         out = {
@@ -480,6 +514,13 @@ class MapTracker(BaseMapper):
         })
 
         return out
+
+    def _sync_memory_bank_track_metadata(self, memory_bank):
+        if memory_bank is None:
+            return
+        memory_bank.batch_tracked_query_len = {
+            b_i: int(track_len) for b_i, track_len in self.tracked_query_length.items()
+        }
         
 
     def forward_train(self, img, vectors, semantic_mask, points=None, img_metas=None, all_prev_data=None,
@@ -505,6 +546,10 @@ class MapTracker(BaseMapper):
         bs = img.shape[0]
 
         _use_memory = self.use_memory and self.num_iter > self.mem_warmup_iters
+
+        # Re-apply guard each train step so downstream mutations cannot
+        # silently re-enable gate forward during baseline runs.
+        self._enforce_no_gate_baseline_runtime()
 
         clip_corruption_mode = 'clean' if self.clean_validation_only else self._sample_corruption_mode()
         if self.corruption_trained_no_gate_baseline:
@@ -616,6 +661,7 @@ class MapTracker(BaseMapper):
                     memory_bank = None
                 else:
                     memory_bank = self.memory_bank if _use_memory else None
+                    self._sync_memory_bank_track_metadata(memory_bank)
                 # 1). Compute the loss for prev frame
                 # 2). Get the matching results for computing the track query to next frame
                 loss_dict_prev, outputs_prev, prev_inds_list, prev_gt_inds_list, prev_matched_reg_cost, \
@@ -686,6 +732,7 @@ class MapTracker(BaseMapper):
         
         if not self.skip_vector_head:
             memory_bank = self.memory_bank if _use_memory else None
+            self._sync_memory_bank_track_metadata(memory_bank)
             # 3. run the head again and compute the loss for the second frame
             preds_list, loss_dict, det_match_idxs, det_match_gt_idxs, gt_list = self.head(
                 bev_features=bev_feats, 
@@ -808,6 +855,7 @@ class MapTracker(BaseMapper):
 
             # Run the vector map decoder with instance-level memory
             memory_bank = self.memory_bank if self.use_memory else None
+            self._sync_memory_bank_track_metadata(memory_bank)
             preds_list = self.head(bev_feats, img_metas=img_metas, 
                         track_query_info=track_query_info, memory_bank=memory_bank,
                         return_loss=False)

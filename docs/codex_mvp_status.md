@@ -22,9 +22,9 @@
 
 1. **Strict propagated/new/pad query masking semantics are only partial.**
    - Current gating eligibility relies on `valid_track_idx`, `query_key_padding_mask`, and memory validity, but does not thread explicit propagated/new/pad masks exactly as the spec’s canonical formulation.
-2. **True per-query-slot pre-attention value scaling is approximated.**
-   - Current `MultiheadAttention` call path still uses shared value tensors per attention call; implementation computes `alpha[q,b,t]` but applies a per-slot value scale derived from a single query slice in the active call path.
-   - This is the repo-grounded compromise in `docs/codex_mvp_plan.md`, but it is weaker than the strict spec ideal.
+2. **Packed-call-path contract should remain explicit and defended.**
+   - The decoder memory branch currently uses the intended packed formulation where `q_len == 1`, so the slotwise value scaling path is exact for the implemented call site rather than an arbitrary multi-query approximation.
+   - This remains a contract that should be enforced by assertions/tests to prevent future misuse outside the packed memory-branch path.
 3. **Runtime validation is incomplete in this environment.**
    - Only static/syntactic and lightweight local checks were run here; no end-to-end training/eval jobs were executed.
 
@@ -38,13 +38,13 @@
 1. Run short stage2 and stage3 training smokes for **gated** and **corruption-trained no-gate** paths with identical corruption schedule and data path.
 2. Confirm B1 vs B2 parity with matched seeds/settings and verify that only gate-specific toggles differ.
 3. Validate contradiction-suite and clean-validation reporting in full runtime environment.
-4. Inspect whether the current per-slot scaling approximation is sufficient for the final claim; if not, plan a tightly scoped K/V interface step after MVP audit sign-off.
+4. Keep the packed `q_len == 1` contract and track-boundary guard covered by targeted tests in the full runtime environment.
 
 ## Known caveats
 
 - This environment did not run full training/evaluation.
 - Some tests are dependency-gated by local runtime availability (e.g., full torch stack / project runtime context).
-- Current implementation follows the conservative no-major-refactor path, so strict per-query-slot pre-attention scaling semantics are partially approximated rather than fully refactored.
+- Current implementation follows the conservative no-major-refactor path and relies on the packed decoder memory call path (`q_len == 1`) plus guardrails rather than a broader arbitrary-`Q` refactor.
 
 ## Deferred items (intentionally not implemented)
 

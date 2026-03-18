@@ -65,11 +65,17 @@ class SlotwiseTemporalGate(BaseModule):
             alpha = alpha * eligible_mask.permute(1, 0, 2).to(dtype=alpha.dtype)
             return mem_embeds, alpha
 
+        assert q_len == 1, (
+            'SlotwiseTemporalGate expects the packed memory-branch call path with '
+            f'q_len == 1, got q_len={q_len}.')
+
         q_bt = q_cur.permute(1, 0, 2)
         mem_bt = mem_embeds.permute(1, 0, 2)
+        q_bt_norm = nn.functional.layer_norm(q_bt, (self.embed_dims,))
+        mem_bt_norm = nn.functional.layer_norm(mem_bt, (self.embed_dims,))
 
-        q_expand = q_bt[:, :, None, :].expand(-1, -1, mem_len, -1)
-        mem_expand = mem_bt[:, None, :, :].expand(-1, q_len, -1, -1)
+        q_expand = q_bt_norm[:, :, None, :].expand(-1, -1, mem_len, -1)
+        mem_expand = mem_bt_norm[:, None, :, :].expand(-1, q_len, -1, -1)
 
         cos_key = nn.functional.cosine_similarity(q_expand, mem_expand, dim=-1, eps=1e-6).unsqueeze(-1)
         l2_val = torch.norm(q_expand - mem_expand, dim=-1, keepdim=True) / math.sqrt(self.embed_dims)
@@ -289,6 +295,15 @@ class MapTransformerLayer(BaseTransformerLayer):
             enabled=gate_enabled,
         )
 
+    @staticmethod
+    def _assert_valid_track_idx_in_bounds(valid_track_idx, track_len, batch_i):
+        if len(valid_track_idx) == 0:
+            return
+        assert (valid_track_idx < track_len).all(), (
+            f'valid_track_idx exceeds tracked-query boundary for batch {batch_i}: '
+            f'max_valid_idx={int(valid_track_idx.max().item())}, '
+            f'track_len={int(track_len)}.')
+
     def forward(self,
                 query,
                 key=None,
@@ -342,6 +357,7 @@ class MapTransformerLayer(BaseTransformerLayer):
         attn_index = 0
         ffn_index = 0
         identity = query
+        query_bev = None
         if attn_masks is None:
             attn_masks = [None for _ in range(self.num_attn)]
         elif isinstance(attn_masks, torch.Tensor):
@@ -396,8 +412,14 @@ class MapTransformerLayer(BaseTransformerLayer):
                 else:
                     # Memory cross attention
                     assert attn_index == 2
+                    assert query_bev is not None, (
+                        'Memory cross-attention requires BEV-updated query (query_bev) '
+                        'from the previous cross-attn step.')
+                    assert query_bev.shape == query.shape, (
+                        f'query_bev shape {query_bev.shape} must match query shape {query.shape} '
+                        'before memory cross-attention.')
                     if memory_bank is not None:
-                        bs = query.shape[1]
+                        bs = query_bev.shape[1]
                         if not hasattr(memory_bank, 'batch_alpha_soft_dict'):
                             memory_bank.batch_alpha_soft_dict = {}
                         if not hasattr(memory_bank, 'batch_v_mem_soft_dict'):
@@ -405,11 +427,15 @@ class MapTransformerLayer(BaseTransformerLayer):
                         query_i_list = []
                         for b_i in range(bs):
                             valid_track_idx = all_valid_track_idx[b_i] 
-                            query_i = query[:, b_i].clone()
+                            query_i = query_bev[:, b_i].clone()
                             query_i = query_i[None,:]
                             query_i_memory = torch.zeros_like(query_i)
 
                             if len(valid_track_idx) != 0:
+                                if hasattr(memory_bank, 'batch_tracked_query_len') and \
+                                        b_i in memory_bank.batch_tracked_query_len:
+                                    track_len = int(memory_bank.batch_tracked_query_len[b_i])
+                                    self._assert_valid_track_idx_in_bounds(valid_track_idx, track_len, b_i)
                                 mem_embeds = memory_bank.batch_mem_embeds_dict[b_i][:, valid_track_idx, :]
                                 mem_key_padding_mask = memory_bank.batch_key_padding_dict[b_i][valid_track_idx]
                                 mem_key_pos = memory_bank.batch_mem_relative_pe_dict[b_i][:, valid_track_idx]
