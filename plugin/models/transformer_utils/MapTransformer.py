@@ -35,7 +35,7 @@ class SlotwiseTemporalGate(BaseModule):
         )
 
     def forward(self, q_cur, mem_embeds, key_padding_mask=None, valid_mem=None,
-                delta_t_int=None, age_rank_norm=None, clean_mem_embeds=None,
+                delta_t_int=None, age_rank_norm=None,
                 eligible_mask=None):
         """Build gated memory values.
 
@@ -442,8 +442,6 @@ class MapTransformerLayer(BaseTransformerLayer):
                                 valid_mem = memory_bank.batch_valid_mem_dict[b_i][valid_track_idx]
                                 delta_t_int = memory_bank.batch_delta_t_int_dict[b_i][valid_track_idx]
                                 age_rank_norm = memory_bank.batch_age_rank_norm_dict[b_i][valid_track_idx]
-                                clean_mem_embeds = memory_bank.batch_mem_clean_embeds_dict[b_i][:, valid_track_idx, :]
-
                                 valid_track_idx = valid_track_idx.to(query_i.device)
                                 valid_query_mask = torch.ones_like(valid_track_idx, dtype=torch.bool)
                                 if query_key_padding_mask is not None:
@@ -459,7 +457,6 @@ class MapTransformerLayer(BaseTransformerLayer):
                                     valid_mem=valid_mem,
                                     delta_t_int=delta_t_int,
                                     age_rank_norm=age_rank_norm,
-                                    clean_mem_embeds=clean_mem_embeds,
                                     eligible_mask=eligible_mask,
                                 )
 
