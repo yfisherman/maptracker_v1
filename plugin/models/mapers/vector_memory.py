@@ -137,9 +137,9 @@ class VectorInstanceMemory(nn.Module):
                 self.mem_bank[mem_lens_per_ins[ins_idx], batch_i, mem_id] = prev_embeddings[propagated_ids[ins_idx]]
                 self.mem_bank_seq_id[mem_lens_per_ins[ins_idx], batch_i, mem_id] = seq_idx
             else:
-                self.mem_bank[:self.bank_size-1, batch_i, mem_id] = self.mem_bank[1:self.bank_size, batch_i, mem_id]
+                self.mem_bank[:self.bank_size-1, batch_i, mem_id] = self.mem_bank[1:self.bank_size, batch_i, mem_id].clone()
                 self.mem_bank[-1, batch_i, mem_id] = prev_embeddings[propagated_ids[ins_idx]]
-                self.mem_bank_seq_id[:self.bank_size-1, batch_i, mem_id] = self.mem_bank_seq_id[1:self.bank_size, batch_i, mem_id]
+                self.mem_bank_seq_id[:self.bank_size-1, batch_i, mem_id] = self.mem_bank_seq_id[1:self.bank_size, batch_i, mem_id].clone()
                 self.mem_bank_seq_id[-1, batch_i, mem_id] = seq_idx
 
         if self.curr_t < self.bank_size:
