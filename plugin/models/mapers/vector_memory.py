@@ -227,7 +227,8 @@ class VectorInstanceMemory(nn.Module):
             return mem_embeds_corrupt, slot_corrupt_mask, slot_corrupt_eligible
 
         for ins_idx in range(num_ins):
-            selected_indices = all_select_indices[ins_idx]
+            selected_indices = torch.as_tensor(
+                all_select_indices[ins_idx], device=device, dtype=torch.long)
             valid_positions = (~key_padding_mask[ins_idx]).nonzero(as_tuple=False).flatten()
             valid_len = len(valid_positions)
             if valid_len == 0:
@@ -240,13 +241,20 @@ class VectorInstanceMemory(nn.Module):
                 target_positions = valid_positions[: max(valid_len - keep_recent, 0)]
 
             for pos in target_positions.tolist():
-                source_pos = selected_indices[pos] - stale_offset
+                source_pos = int(selected_indices[pos].item()) - stale_offset
                 if source_pos < 0:
                     # Missing stale source => unsupervised / ineligible.
                     continue
                 if source_pos >= canonical_mem_embeds.shape[0]:
                     continue
-                mem_embeds_corrupt[pos, ins_idx] = canonical_mem_embeds[source_pos, ins_idx]
+
+                src_local = (selected_indices == source_pos).nonzero(as_tuple=False).flatten()
+                if len(src_local) == 0:
+                    # Missing propagated stale source in selected subset =>
+                    # unsupervised / ineligible for this forward pass.
+                    continue
+
+                mem_embeds_corrupt[pos, ins_idx] = mem_embeds_clean[src_local[0].item(), ins_idx]
                 slot_corrupt_mask[ins_idx, pos] = True
                 slot_corrupt_eligible[ins_idx, pos] = True
 
