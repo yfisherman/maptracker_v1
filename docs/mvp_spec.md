@@ -486,6 +486,43 @@ eval:
 
 This project modifies MapTracker by inserting a pre-fusion slotwise temporal memory gate into the VEC decoder. For each propagated query and each selected historical memory slot, the gate compares current query evidence against historical key / value summaries plus temporal age features and outputs a scalar alpha that suppresses the historical value contribution before historical attention. The system is trained with read-path-only synthetic stale-memory corruption using clean clips, full-bank stale corruption, and tail-only stale corruption, and evaluated against a standard MapTracker baseline and a corruption-trained no-gate baseline. The intended claim is narrow: under a controlled stale-memory contradiction protocol, pre-fusion slotwise temporal gating can improve contradiction recovery without materially damaging clean vectorized HD mapping quality.
 
+## MVP evaluation commands (clean + contradiction suite)
+
+Clean eval (default corruption control is clean):
+
+```bash
+python tools/test.py <CONFIG> <CHECKPOINT> --eval --work-dir <WORK_DIR>
+```
+
+Condition-specific contradiction eval (example: C-tail, stale_offset=8):
+
+```bash
+python tools/test.py <CONFIG> <CHECKPOINT> --eval --work-dir <WORK_DIR>/c_tail_offset8 \
+  --memory-corruption-mode c_tail \
+  --memory-stale-offset 8 \
+  --memory-c-tail-keep-recent 1 \
+  --memory-corruption-onset <ONSET> \
+  --condition-tag c_tail_offset8_onset<ONSET>
+```
+
+Full contradiction suite (mode in `{c_full,c_tail}`, stale_offset list `[4,8]`):
+
+```bash
+python tools/tracking/run_contradiction_suite.py <CONFIG> <CHECKPOINT> \
+  --work-root <WORK_DIR>/contradiction_suite \
+  --modes c_full c_tail \
+  --stale-offsets 4 8 \
+  --onset <ONSET>
+```
+
+Output locations:
+
+- Per-condition eval artifacts are written under `<WORK_DIR>/contradiction_suite/<mode>_offset<k>_onset<t>/`.
+- Standard prediction artifact: `submission_vector.json`.
+- Condition metadata: `condition_meta.json`.
+- Contradiction metrics: `contradiction_metrics.json`.
+- Suite aggregate summary + qualitative scene pointers: `contradiction_suite_summary.json`.
+
 ## References and source basis
 
 - Original Project Proposal by Yousef Kassem.
