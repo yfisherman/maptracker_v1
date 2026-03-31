@@ -78,6 +78,7 @@ class MapTracker(BaseMapper):
         self.c_tail_keep_recent = int(self.mvp_temporal_gate_cfg.get('c_tail_keep_recent', 1))
         self.clean_validation_only = bool(self.mvp_temporal_gate_cfg.get('clean_validation_only', False))
         self.contradiction_suite_enabled = bool(self.mvp_temporal_gate_cfg.get('run_contradiction_suite', False))
+        self.eval_corruption_cfg = self.mvp_temporal_gate_cfg.get('eval_corruption_cfg', {})
         self.corruption_trained_no_gate_baseline = bool(
             self.mvp_temporal_gate_cfg.get('corruption_trained_no_gate_baseline', False))
         self.freeze_stage = self.mvp_temporal_gate_cfg.get('freeze_stage', None)
@@ -393,6 +394,40 @@ class MapTracker(BaseMapper):
             meta['memory_c_tail_keep_recent'] = self.c_tail_keep_recent
             meta['memory_corruption_onset'] = self.corruption_onset
 
+    @staticmethod
+    def _normalize_corruption_mode(mode):
+        mode = str(mode).lower()
+        if mode not in ['clean', 'c_full', 'c_tail']:
+            return 'clean'
+        return mode
+
+    def _resolve_eval_memory_corruption_cfg(self):
+        """
+        Resolve deterministic evaluation-time memory corruption control.
+        Priority:
+          1) mvp_temporal_gate_cfg.eval_corruption_cfg (if present)
+          2) fallback clean defaults (preserve existing clean eval behavior)
+        """
+        cfg = self.eval_corruption_cfg if isinstance(self.eval_corruption_cfg, dict) else {}
+        mode = self._normalize_corruption_mode(cfg.get('memory_corruption_mode', 'clean'))
+        stale_offset = int(cfg.get('memory_stale_offset', 4))
+        c_tail_keep_recent = int(cfg.get('memory_c_tail_keep_recent', self.c_tail_keep_recent))
+        corruption_onset = int(cfg.get('memory_corruption_onset', self.corruption_onset))
+        return dict(
+            memory_corruption_mode=mode,
+            memory_stale_offset=max(0, stale_offset),
+            memory_c_tail_keep_recent=max(0, c_tail_keep_recent),
+            memory_corruption_onset=max(0, corruption_onset),
+        )
+
+    def _inject_eval_memory_corruption_meta(self, img_metas):
+        cfg = self._resolve_eval_memory_corruption_cfg()
+        for meta in img_metas:
+            meta['memory_corruption_mode'] = cfg['memory_corruption_mode']
+            meta['memory_stale_offset'] = cfg['memory_stale_offset']
+            meta['memory_c_tail_keep_recent'] = cfg['memory_c_tail_keep_recent']
+            meta['memory_corruption_onset'] = cfg['memory_corruption_onset']
+
     def _iter_decoder_temporal_gates(self):
         """Yield temporal-gate modules wired into decoder memory path."""
         decoder = getattr(getattr(self.head, 'transformer', None), 'decoder', None)
@@ -525,6 +560,52 @@ class MapTracker(BaseMapper):
         memory_bank.batch_tracked_query_len = {
             b_i: int(track_len) for b_i, track_len in self.tracked_query_length.items()
         }
+
+    def _compute_inference_alpha_stats(self, memory_bank, device):
+        zero = torch.zeros((1,), device=device).squeeze(0)
+        out = {
+            'alpha_mean_affected': zero,
+            'alpha_mean_preserved_recent': zero,
+            'alpha_mean_clean_recent': zero,
+        }
+        if memory_bank is None or not hasattr(memory_bank, 'batch_alpha_soft_dict'):
+            return out
+
+        affected_vals, preserved_vals, clean_vals = [], [], []
+        for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
+            valid_track_list = getattr(memory_bank, 'valid_track_idx', None)
+            if valid_track_list is None or b_i >= len(valid_track_list):
+                continue
+            valid_track_idx = valid_track_list[b_i]
+            if valid_track_idx is None or len(valid_track_idx) == 0:
+                continue
+            valid_track_idx = valid_track_idx.to(alpha_full.device)
+
+            corrupt = memory_bank.batch_slot_corrupt_mask_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            eligible = memory_bank.batch_slot_corrupt_eligible_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            valid_mem = memory_bank.batch_valid_mem_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            age_rank = memory_bank.batch_age_rank_norm_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            mode = str(memory_bank.batch_mem_corrupt_mode_dict.get(b_i, 'clean')).lower()
+            alpha_valid = alpha_full[valid_track_idx]
+
+            affected = eligible & corrupt
+            if affected.any():
+                affected_vals.append(alpha_valid[affected])
+
+            recency_ref = age_rank.max(dim=1, keepdim=True).values
+            preserved_recent = valid_mem & (~corrupt) & (age_rank >= recency_ref)
+            if preserved_recent.any():
+                preserved_vals.append(alpha_valid[preserved_recent])
+
+            if mode == 'clean':
+                clean_recent = valid_mem & (age_rank >= recency_ref)
+                if clean_recent.any():
+                    clean_vals.append(alpha_valid[clean_recent])
+
+        out['alpha_mean_affected'] = torch.cat(affected_vals).mean() if affected_vals else zero
+        out['alpha_mean_preserved_recent'] = torch.cat(preserved_vals).mean() if preserved_vals else zero
+        out['alpha_mean_clean_recent'] = torch.cat(clean_vals).mean() if clean_vals else zero
+        return out
         
 
     def forward_train(self, img, vectors, semantic_mask, points=None, img_metas=None, all_prev_data=None,
@@ -826,6 +907,9 @@ class MapTracker(BaseMapper):
         scene_name, local_idx, seq_length  = seq_info[0]
         first_frame = (local_idx == 0)
         img_metas[0]['local_idx'] = local_idx
+        # Deterministic eval-time control for contradiction-suite / forced
+        # corruption conditions. Default remains clean if unset.
+        self._inject_eval_memory_corruption_meta(img_metas)
     
         if first_frame:
             if self.use_memory:
@@ -917,6 +1001,11 @@ class MapTracker(BaseMapper):
             results_list[b_i]['semantic_mask'] = preds_i
             if 'token' not in results_list[b_i]:
                 results_list[b_i]['token'] = tokens[b_i]
+            alpha_stats = self._compute_inference_alpha_stats(
+                self.memory_bank if self.use_memory else None, bev_feats.device)
+            results_list[b_i]['alpha_stats'] = {
+                k: float(v.item()) for k, v in alpha_stats.items()
+            }
 
         return results_list
 
