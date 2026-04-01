@@ -29,6 +29,7 @@ CMD=(bash tools/experiments/submit_b1_b2_sbatch.sh
   --eval-gpus "$EVAL_GPUS"
   --gpus-per-node "$GPUS_PER_NODE"
   --cpus-per-task "$CPUS_PER_TASK"
+  --b1-cfg-options "model.mvp_temporal_gate_cfg.corruption_trained_no_gate_baseline=True"
   --skip-train-validation
   --skip-final-eval)
 
