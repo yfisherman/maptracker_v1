@@ -14,13 +14,16 @@ Required:
 Optional:
   --run-id ID
   --seed N                           (default: 0)
-  --launcher none|pytorch|slurm      (default: none)
+  --launcher none|pytorch|slurm|slurm-step  (default: none)
   --partition NAME                   (required for launcher=slurm)
   --train-gpus N                     (default: 1)
   --eval-gpus N                      (default: train-gpus)
   --gpus-per-node N                  (default: train-gpus)
   --cpus-per-task N                  (default: 5)
   --available-gpus N                 (for auto fallback in both_parallel)
+  --resume                           (reuse an existing run dir and auto-resume train)
+  --skip-train-validation            (pass --no-validate to training)
+  --skip-final-eval                  (skip wrapper's post-train clean eval)
 
   --cfg-options-common "k=v ..."     (applied to both)
   --b1-cfg-options "k=v ..."
@@ -68,6 +71,9 @@ RUN_CLEAN_CMAP=0
 CONS_FRAMES=5
 
 DRY_RUN=0
+RESUME=0
+SKIP_TRAIN_VALIDATION=0
+SKIP_FINAL_EVAL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,6 +90,9 @@ while [[ $# -gt 0 ]]; do
     --gpus-per-node) GPUS_PER_NODE="$2"; shift 2 ;;
     --cpus-per-task) CPUS_PER_TASK="$2"; shift 2 ;;
     --available-gpus) AVAILABLE_GPUS="$2"; shift 2 ;;
+    --resume) RESUME=1; shift ;;
+    --skip-train-validation) SKIP_TRAIN_VALIDATION=1; shift ;;
+    --skip-final-eval) SKIP_FINAL_EVAL=1; shift ;;
     --cfg-options-common) CFG_COMMON_STR="$2"; shift 2 ;;
     --b1-cfg-options) B1_CFG_STR="$2"; shift 2 ;;
     --b2-cfg-options) B2_CFG_STR="$2"; shift 2 ;;
@@ -121,6 +130,14 @@ if [[ $RUN_SUITE -eq 1 && -z "$SUITE_ONSET" ]]; then
   echo "[run_b1_b2] --suite-onset is required with --run-contradiction-suite" >&2
   exit 2
 fi
+if [[ $SKIP_FINAL_EVAL -eq 1 && $RUN_CLEAN_CMAP -eq 1 ]]; then
+  echo "[run_b1_b2] --skip-final-eval cannot be combined with --run-clean-cmap" >&2
+  exit 2
+fi
+if [[ $SKIP_FINAL_EVAL -eq 1 && $RUN_SUITE -eq 1 ]]; then
+  echo "[run_b1_b2] --skip-final-eval cannot be combined with --run-contradiction-suite" >&2
+  exit 2
+fi
 
 case "$MODE" in
   b1_only|b2_only|both_parallel|both_sequential) ;;
@@ -139,7 +156,7 @@ LOCK_FILE="$BASE_DIR/.lock"
 MAIN_LOG="$LOG_DIR/run_b1_b2.log"
 
 mkdir -p "$WORK_ROOT"
-if [[ -e "$BASE_DIR" ]]; then
+if [[ $RESUME -eq 0 && -e "$BASE_DIR" ]]; then
   if [[ -n "$(find "$BASE_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)" ]]; then
     echo "[run_b1_b2] Refusing to overwrite non-empty run dir: $BASE_DIR" >&2
     exit 1
@@ -182,6 +199,9 @@ VERIFY_CMD=(bash tools/experiments/verify_assets.sh
   --checkpoint "$BASE_CHECKPOINT"
   --work-root "$WORK_ROOT"
   --run-dir "$BASE_DIR")
+if [[ $RESUME -eq 1 ]]; then
+  VERIFY_CMD+=(--allow-nonempty-run-dir)
+fi
 echo "[cmd] ${VERIFY_CMD[*]}"
 if [[ $DRY_RUN -eq 0 ]]; then
   "${VERIFY_CMD[@]}"
@@ -189,8 +209,13 @@ fi
 
 mkdir -p "$LOG_DIR" "$MANIFEST_DIR"
 if [[ -e "$LOCK_FILE" ]]; then
-  echo "[run_b1_b2] Lock exists: $LOCK_FILE" >&2
-  exit 1
+  lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    echo "[run_b1_b2] Lock exists and is active: $LOCK_FILE (pid=$lock_pid)" >&2
+    exit 1
+  fi
+  echo "[run_b1_b2] Removing stale lock: $LOCK_FILE" | tee -a "$MAIN_LOG"
+  rm -f "$LOCK_FILE"
 fi
 echo "$$" > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
@@ -215,6 +240,7 @@ run_one() {
 
   # force deterministic seed in cfg and CLI for reproducibility
   baseline_cfg+=("seed=${SEED}")
+  baseline_cfg+=("auto_resume=True")
   if ! printf '%s\n' "${baseline_cfg[@]}" | grep -q '^load_from='; then
     baseline_cfg+=("load_from=${BASE_CHECKPOINT}")
   fi
@@ -222,6 +248,11 @@ run_one() {
   local -a train_cmd
   if [[ "$LAUNCHER" == "slurm" ]]; then
     train_cmd=(env GPUS="$TRAIN_GPUS" GPUS_PER_NODE="$GPUS_PER_NODE" CPUS_PER_TASK="$CPUS_PER_TASK" bash tools/slurm_train.sh "$PARTITION" "${baseline}_train_${RUN_ID}" "$BASE_CONFIG" "$train_dir" --seed "$SEED")
+    if [[ ${#baseline_cfg[@]} -gt 0 ]]; then
+      train_cmd+=(--cfg-options "${baseline_cfg[@]}")
+    fi
+  elif [[ "$LAUNCHER" == "slurm-step" ]]; then
+    train_cmd=(env GPUS="$TRAIN_GPUS" GPUS_PER_NODE="$GPUS_PER_NODE" CPUS_PER_TASK="$CPUS_PER_TASK" bash tools/slurm_train_step.sh "$BASE_CONFIG" "$train_dir" --seed "$SEED")
     if [[ ${#baseline_cfg[@]} -gt 0 ]]; then
       train_cmd+=(--cfg-options "${baseline_cfg[@]}")
     fi
@@ -235,6 +266,9 @@ run_one() {
     if [[ ${#baseline_cfg[@]} -gt 0 ]]; then
       train_cmd+=(--cfg-options "${baseline_cfg[@]}")
     fi
+  fi
+  if [[ $SKIP_TRAIN_VALIDATION -eq 1 ]]; then
+    train_cmd+=(--no-validate)
   fi
 
   echo "[${baseline}] train start" | tee -a "$b_log"
@@ -250,26 +284,35 @@ run_one() {
     echo "[${baseline}] WARNING: no train checkpoint found, falling back to base checkpoint: $final_ckpt" | tee -a "$b_log"
   fi
 
-  local -a eval_cmd
-  if [[ "$LAUNCHER" == "slurm" ]]; then
-    eval_cmd=(env GPUS="$EVAL_GPUS" GPUS_PER_NODE="$GPUS_PER_NODE" CPUS_PER_TASK="$CPUS_PER_TASK" bash tools/slurm_test.sh "$PARTITION" "${baseline}_eval_${RUN_ID}" "$BASE_CONFIG" "$final_ckpt" --work-dir "$eval_dir" --eval --seed "$SEED" --condition-tag "${baseline}_clean")
-    if [[ ${#EVAL_CFG_ARR[@]} -gt 0 ]]; then
-      eval_cmd+=(--cfg-options "${EVAL_CFG_ARR[@]}")
+  if [[ $SKIP_FINAL_EVAL -eq 0 ]]; then
+    local -a eval_cmd
+    if [[ "$LAUNCHER" == "slurm" ]]; then
+      eval_cmd=(env GPUS="$EVAL_GPUS" GPUS_PER_NODE="$GPUS_PER_NODE" CPUS_PER_TASK="$CPUS_PER_TASK" bash tools/slurm_test.sh "$PARTITION" "${baseline}_eval_${RUN_ID}" "$BASE_CONFIG" "$final_ckpt" --work-dir "$eval_dir" --eval --seed "$SEED" --condition-tag "${baseline}_clean")
+      if [[ ${#EVAL_CFG_ARR[@]} -gt 0 ]]; then
+        eval_cmd+=(--cfg-options "${EVAL_CFG_ARR[@]}")
+      fi
+    elif [[ "$LAUNCHER" == "slurm-step" ]]; then
+      eval_cmd=(env GPUS="$EVAL_GPUS" GPUS_PER_NODE="$GPUS_PER_NODE" CPUS_PER_TASK="$CPUS_PER_TASK" bash tools/slurm_test_step.sh "$BASE_CONFIG" "$final_ckpt" --work-dir "$eval_dir" --eval --seed "$SEED" --condition-tag "${baseline}_clean")
+      if [[ ${#EVAL_CFG_ARR[@]} -gt 0 ]]; then
+        eval_cmd+=(--cfg-options "${EVAL_CFG_ARR[@]}")
+      fi
+    elif [[ "$LAUNCHER" == "pytorch" ]]; then
+      eval_cmd=(bash tools/dist_test.sh "$BASE_CONFIG" "$final_ckpt" "$EVAL_GPUS" --work-dir "$eval_dir" --eval --seed "$SEED" --condition-tag "${baseline}_clean")
+      if [[ ${#EVAL_CFG_ARR[@]} -gt 0 ]]; then
+        eval_cmd+=(--cfg-options "${EVAL_CFG_ARR[@]}")
+      fi
+    else
+      eval_cmd=(python tools/test.py "$BASE_CONFIG" "$final_ckpt" --work-dir "$eval_dir" --eval --seed "$SEED" --condition-tag "${baseline}_clean" --launcher none)
+      if [[ ${#EVAL_CFG_ARR[@]} -gt 0 ]]; then
+        eval_cmd+=(--cfg-options "${EVAL_CFG_ARR[@]}")
+      fi
     fi
-  elif [[ "$LAUNCHER" == "pytorch" ]]; then
-    eval_cmd=(bash tools/dist_test.sh "$BASE_CONFIG" "$final_ckpt" "$EVAL_GPUS" --work-dir "$eval_dir" --eval --seed "$SEED" --condition-tag "${baseline}_clean")
-    if [[ ${#EVAL_CFG_ARR[@]} -gt 0 ]]; then
-      eval_cmd+=(--cfg-options "${EVAL_CFG_ARR[@]}")
-    fi
-  else
-    eval_cmd=(python tools/test.py "$BASE_CONFIG" "$final_ckpt" --work-dir "$eval_dir" --eval --seed "$SEED" --condition-tag "${baseline}_clean" --launcher none)
-    if [[ ${#EVAL_CFG_ARR[@]} -gt 0 ]]; then
-      eval_cmd+=(--cfg-options "${EVAL_CFG_ARR[@]}")
-    fi
-  fi
 
-  echo "[${baseline}] eval start" | tee -a "$b_log"
-  run_or_print "${eval_cmd[@]}"
+    echo "[${baseline}] eval start" | tee -a "$b_log"
+    run_or_print "${eval_cmd[@]}"
+  else
+    echo "[${baseline}] final eval skipped" | tee -a "$b_log"
+  fi
 
   if [[ $RUN_CLEAN_CMAP -eq 1 ]]; then
     local pred_json="$eval_dir/submission_vector.json"
@@ -313,6 +356,8 @@ run_one() {
   "base_config": "${BASE_CONFIG}",
   "base_checkpoint": "${BASE_CHECKPOINT}",
   "final_checkpoint": "${final_ckpt}",
+  "skip_train_validation": ${SKIP_TRAIN_VALIDATION},
+  "skip_final_eval": ${SKIP_FINAL_EVAL},
   "cfg_options_common": "${CFG_COMMON_STR}",
   "cfg_options_baseline": "$( [[ "$baseline" == "b1" ]] && echo "$B1_CFG_STR" || echo "$B2_CFG_STR" )",
   "eval_cfg_options": "${EVAL_CFG_STR}",
@@ -370,6 +415,9 @@ cat > "$MANIFEST_JSON" <<JSON
   "base_checkpoint": "${BASE_CHECKPOINT}",
   "seed": ${SEED},
   "launcher": "${LAUNCHER}",
+  "resume": ${RESUME},
+  "skip_train_validation": ${SKIP_TRAIN_VALIDATION},
+  "skip_final_eval": ${SKIP_FINAL_EVAL},
   "train_gpus": ${TRAIN_GPUS},
   "eval_gpus": ${EVAL_GPUS},
   "run_contradiction_suite": ${RUN_SUITE},

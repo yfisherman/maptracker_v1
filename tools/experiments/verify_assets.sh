@@ -12,6 +12,7 @@ Required:
 
 Optional:
   --run-dir DIR              Exact run dir to verify/create checks against.
+  --allow-nonempty-run-dir   Permit reusing an existing populated run dir.
   --dataset-root DIR         Optional dataset root check.
   --map-file PATH            Optional map/annotation file check (repeatable).
   --require-path PATH        Optional additional required path (repeatable).
@@ -26,6 +27,7 @@ WORK_ROOT=""
 RUN_DIR=""
 DATASET_ROOT=""
 DRY_RUN=0
+ALLOW_NONEMPTY_RUN_DIR=0
 
 declare -a MAP_FILES=()
 declare -a EXTRA_PATHS=()
@@ -40,6 +42,8 @@ while [[ $# -gt 0 ]]; do
       WORK_ROOT="$2"; shift 2 ;;
     --run-dir)
       RUN_DIR="$2"; shift 2 ;;
+    --allow-nonempty-run-dir)
+      ALLOW_NONEMPTY_RUN_DIR=1; shift ;;
     --dataset-root)
       DATASET_ROOT="$2"; shift 2 ;;
     --map-file)
@@ -113,14 +117,18 @@ check_writable_dir "$WORK_ROOT"
 
 if [[ -n "$RUN_DIR" ]]; then
   if [[ -e "$RUN_DIR" ]]; then
-    if [[ -d "$RUN_DIR" ]] && [[ -n "$(find "$RUN_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)" ]]; then
+    if [[ -d "$RUN_DIR" ]] && [[ -n "$(find "$RUN_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)" ]] && [[ $ALLOW_NONEMPTY_RUN_DIR -eq 0 ]]; then
       fail "Run dir already exists and is non-empty: $RUN_DIR"
     elif [[ ! -d "$RUN_DIR" ]]; then
       fail "Run dir path exists but is not a directory: $RUN_DIR"
     fi
   fi
   check_writable_dir "$(dirname "$RUN_DIR")"
-  echo "[verify_assets] OK run-dir collision check: $RUN_DIR"
+  if [[ $ALLOW_NONEMPTY_RUN_DIR -eq 1 ]]; then
+    echo "[verify_assets] OK run-dir reuse check: $RUN_DIR"
+  else
+    echo "[verify_assets] OK run-dir collision check: $RUN_DIR"
+  fi
 fi
 
 summary_json=""

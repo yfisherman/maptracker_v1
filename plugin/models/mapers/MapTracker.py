@@ -561,6 +561,16 @@ class MapTracker(BaseMapper):
             b_i: int(track_len) for b_i, track_len in self.tracked_query_length.items()
         }
 
+    def _set_inference_tracked_query_length(self, track_query_info):
+        self.tracked_query_length = {}
+        if track_query_info is None:
+            return
+
+        for b_i, track_info in enumerate(track_query_info):
+            track_embeds = track_info.get('track_query_hs_embeds', None)
+            track_len = 0 if track_embeds is None else track_embeds.shape[0]
+            self.tracked_query_length[b_i] = int(track_len)
+
     def _compute_inference_alpha_stats(self, memory_bank, device):
         zero = torch.zeros((1,), device=device).squeeze(0)
         out = {
@@ -918,6 +928,7 @@ class MapTracker(BaseMapper):
                 self.memory_bank.init_memory(bs=1)
             self.history_bev_feats_all = []
             self.history_img_metas_all = []
+            self.tracked_query_length = {}
         
         if self.use_memory:
             self.memory_bank.curr_t = local_idx
@@ -946,6 +957,7 @@ class MapTracker(BaseMapper):
         else:
             # Using the saved prev-frame output to prepare the track query inputs
             track_query_info = self.head.get_track_info(scene_name, local_idx)
+            self._set_inference_tracked_query_length(track_query_info)
             # Transform prev-frame feature & pts to curr frame using the relative pose
             self.temporal_propagate(bev_feats, img_metas, all_history_curr2prev, 
                 all_history_prev2curr, self.use_memory, track_query_info)
@@ -958,6 +970,9 @@ class MapTracker(BaseMapper):
                         track_query_info=track_query_info, memory_bank=memory_bank,
                         return_loss=False)
             track_dict = self._process_track_query_info(track_query_info)
+
+        alpha_stats = self._compute_inference_alpha_stats(
+            self.memory_bank if self.use_memory else None, bev_feats.device)
             
         if not self.skip_vector_head:
             # take predictions from the last layer
@@ -1001,8 +1016,6 @@ class MapTracker(BaseMapper):
             results_list[b_i]['semantic_mask'] = preds_i
             if 'token' not in results_list[b_i]:
                 results_list[b_i]['token'] = tokens[b_i]
-            alpha_stats = self._compute_inference_alpha_stats(
-                self.memory_bank if self.use_memory else None, bev_feats.device)
             results_list[b_i]['alpha_stats'] = {
                 k: float(v.item()) for k, v in alpha_stats.items()
             }

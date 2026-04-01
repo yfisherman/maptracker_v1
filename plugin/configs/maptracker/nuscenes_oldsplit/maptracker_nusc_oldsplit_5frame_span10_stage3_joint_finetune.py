@@ -453,7 +453,7 @@ lr_config = dict(
 evaluation = dict(interval=num_epochs_interval*num_iters_per_epoch)
 #evaluation = dict(interval=1) # for debugging use..
 find_unused_parameters = True #### when use checkpoint, find_unused_parameters must be False
-checkpoint_config = dict(interval=num_epochs_interval*num_iters_per_epoch)
+checkpoint_config = dict(interval=num_iters_per_epoch)
 
 runner = dict(
     type='MyRunnerWrapper', max_iters=num_epochs * num_iters_per_epoch)
@@ -466,5 +466,6 @@ log_config = dict(
     ])
 
 SyncBN = True
+auto_resume = True
 
 load_from = "work_dirs/maptracker_nusc_oldsplit_5frame_span10_stage2_warmup/latest.pth"

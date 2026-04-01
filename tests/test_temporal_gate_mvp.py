@@ -19,6 +19,12 @@ try:
 except Exception:
     VECTOR_MEMORY_OK = False
 
+try:
+    from plugin.models.mapers.MapTracker import MapTracker
+    TRACKER_OK = TORCH_OK
+except Exception:
+    TRACKER_OK = False
+
 
 class TestTemporalGateMVP(unittest.TestCase):
 
@@ -134,6 +140,19 @@ class TestTemporalGateMVP(unittest.TestCase):
         self.assertTrue(mask[0, -2].item() is False)
         self.assertTrue((eligible[0, :-2] == mask[0, :-2]).all().item())
         self.assertTrue(torch.allclose(corrupt[-1], clean[-1]))
+
+    @unittest.skipUnless(TRACKER_OK, 'maptracker/runtime deps unavailable')
+    def test_inference_track_query_length_from_track_info(self):
+        tracker = MapTracker.__new__(MapTracker)
+        track_query_info = [
+            {'track_query_hs_embeds': torch.randn(3, 8)},
+            {'track_query_hs_embeds': torch.randn(0, 8)},
+            {},
+        ]
+
+        MapTracker._set_inference_tracked_query_length(tracker, track_query_info)
+
+        self.assertEqual(tracker.tracked_query_length, {0: 3, 1: 0, 2: 0})
 
 
 if __name__ == '__main__':

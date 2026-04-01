@@ -48,10 +48,11 @@ class VectorEvaluate(object):
             dataset = 'av2'
         else:
             dataset = 'nusc'
+        n_samples = len(self.dataset)
         if self.new_split:
-            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}_newsplit.pkl'
+            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}_newsplit_n{n_samples}.pkl'
         else:
-            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}.pkl'
+            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}_n{n_samples}.pkl'
         if os.path.exists(tmp_file):
             print(f'loading cached gts from {tmp_file}')
             gts = mmcv.load(tmp_file)
@@ -190,12 +191,11 @@ class VectorEvaluate(object):
         num_gts = {label: 0 for label in self.id2cat.keys()}
         num_preds = {label: 0 for label in self.id2cat.keys()}
 
-        # align by token
-        for token, gt in self.gts.items():
-            if token in results.keys():
-                pred = results[token]
-            else:
-                pred = {'vectors': [], 'scores': [], 'labels': []}
+        # align by token - only evaluate tokens present in the submission
+        # (iterating results avoids penalising unsubmitted tokens in partial evals)
+        gts_to_eval = {t: self.gts[t] for t in results if t in self.gts}
+        for token, gt in gts_to_eval.items():
+            pred = results[token]
             
             # for every sample
             vectors_by_cls = {label: [] for label in self.id2cat.keys()}

@@ -110,6 +110,7 @@ data
 .idea
 
 # custom
+core.*
 *.pkl
 *.gif
 *.pkl.json

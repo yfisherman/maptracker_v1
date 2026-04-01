@@ -161,6 +161,7 @@ def dump_alpha_stats_if_available(outputs, work_dir):
             alpha_records.append(item['alpha_stats'])
     if not alpha_records:
         return
+    os.makedirs(work_dir, exist_ok=True)
     keys = sorted(alpha_records[0].keys())
     summary = {}
     for key in keys:
