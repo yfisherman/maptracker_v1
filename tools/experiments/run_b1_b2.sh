@@ -178,6 +178,16 @@ run_or_print() {
   fi
 }
 
+log_message() {
+  local log_file="$1"
+  shift
+  if [[ $DRY_RUN -eq 0 && -d "$(dirname "$log_file")" ]]; then
+    echo "$*" | tee -a "$log_file"
+  else
+    echo "$*"
+  fi
+}
+
 declare -a CFG_COMMON_ARR=() B1_CFG_ARR=() B2_CFG_ARR=() EVAL_CFG_ARR=() SUITE_MODES_ARR=() SUITE_OFFSETS_ARR=()
 if [[ -n "$CFG_COMMON_STR" ]]; then read -r -a CFG_COMMON_ARR <<< "$CFG_COMMON_STR"; fi
 if [[ -n "$B1_CFG_STR" ]]; then read -r -a B1_CFG_ARR <<< "$B1_CFG_STR"; fi
@@ -202,23 +212,26 @@ VERIFY_CMD=(bash tools/experiments/verify_assets.sh
 if [[ $RESUME -eq 1 ]]; then
   VERIFY_CMD+=(--allow-nonempty-run-dir)
 fi
+if [[ $DRY_RUN -eq 1 ]]; then
+  VERIFY_CMD+=(--dry-run)
+fi
 echo "[cmd] ${VERIFY_CMD[*]}"
-if [[ $DRY_RUN -eq 0 ]]; then
-  "${VERIFY_CMD[@]}"
-fi
+"${VERIFY_CMD[@]}"
 
-mkdir -p "$LOG_DIR" "$MANIFEST_DIR"
-if [[ -e "$LOCK_FILE" ]]; then
-  lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
-  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-    echo "[run_b1_b2] Lock exists and is active: $LOCK_FILE (pid=$lock_pid)" >&2
-    exit 1
+if [[ $DRY_RUN -eq 0 ]]; then
+  mkdir -p "$LOG_DIR" "$MANIFEST_DIR"
+  if [[ -e "$LOCK_FILE" ]]; then
+    lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      echo "[run_b1_b2] Lock exists and is active: $LOCK_FILE (pid=$lock_pid)" >&2
+      exit 1
+    fi
+    log_message "$MAIN_LOG" "[run_b1_b2] Removing stale lock: $LOCK_FILE"
+    rm -f "$LOCK_FILE"
   fi
-  echo "[run_b1_b2] Removing stale lock: $LOCK_FILE" | tee -a "$MAIN_LOG"
-  rm -f "$LOCK_FILE"
+  echo "$$" > "$LOCK_FILE"
+  trap 'rm -f "$LOCK_FILE"' EXIT
 fi
-echo "$$" > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
 
 run_one() {
   local baseline="$1"
@@ -229,7 +242,9 @@ run_one() {
   local ckpt_path="$BASE_CHECKPOINT"
   local final_ckpt=""
 
-  mkdir -p "$train_dir" "$eval_dir"
+  if [[ $DRY_RUN -eq 0 ]]; then
+    mkdir -p "$train_dir" "$eval_dir"
+  fi
 
   local -a baseline_cfg=("${CFG_COMMON_ARR[@]}")
   if [[ "$baseline" == "b1" ]]; then
@@ -271,17 +286,21 @@ run_one() {
     train_cmd+=(--no-validate)
   fi
 
-  echo "[${baseline}] train start" | tee -a "$b_log"
+  log_message "$b_log" "[${baseline}] train start"
   run_or_print "${train_cmd[@]}"
 
-  # Safe checkpoint intake after train: prefer latest.pth then epoch_*.pth
+  # Safe checkpoint intake after train: prefer latest.pth then iter_*.pth
   if [[ -f "$train_dir/latest.pth" ]]; then
     final_ckpt="$train_dir/latest.pth"
-  elif compgen -G "$train_dir/epoch_*.pth" > /dev/null; then
-    final_ckpt="$(ls -1 "$train_dir"/epoch_*.pth | sort | tail -n 1)"
+  elif compgen -G "$train_dir/iter_*.pth" > /dev/null; then
+    final_ckpt="$(ls -1 "$train_dir"/iter_*.pth | sort -V | tail -n 1)"
   else
-    final_ckpt="$ckpt_path"
-    echo "[${baseline}] WARNING: no train checkpoint found, falling back to base checkpoint: $final_ckpt" | tee -a "$b_log"
+    if [[ $SKIP_FINAL_EVAL -eq 0 || $RUN_CLEAN_CMAP -eq 1 || $RUN_SUITE -eq 1 ]]; then
+      echo "[${baseline}] ERROR: no training checkpoint found in $train_dir" >&2
+      exit 1
+    fi
+    final_ckpt=""
+    log_message "$b_log" "[${baseline}] WARNING: no train checkpoint found in $train_dir"
   fi
 
   if [[ $SKIP_FINAL_EVAL -eq 0 ]]; then
@@ -308,10 +327,10 @@ run_one() {
       fi
     fi
 
-    echo "[${baseline}] eval start" | tee -a "$b_log"
+    log_message "$b_log" "[${baseline}] eval start"
     run_or_print "${eval_cmd[@]}"
   else
-    echo "[${baseline}] final eval skipped" | tee -a "$b_log"
+    log_message "$b_log" "[${baseline}] final eval skipped"
   fi
 
   if [[ $RUN_CLEAN_CMAP -eq 1 ]]; then
@@ -321,13 +340,15 @@ run_one() {
       echo "[${baseline}] ERROR: expected clean eval output missing: $pred_json" | tee -a "$b_log"
       exit 1
     fi
-    echo "[${baseline}] clean C-mAP start" | tee -a "$b_log"
+    log_message "$b_log" "[${baseline}] clean C-mAP start"
     run_or_print python tools/tracking/prepare_pred_tracks.py "$BASE_CONFIG" --result_path "$pred_json" --cons_frames "$CONS_FRAMES"
     run_or_print python tools/tracking/calculate_cmap.py "$BASE_CONFIG" --result_path "$match_pkl" --cons_frames "$CONS_FRAMES"
   fi
 
   if [[ $RUN_SUITE -eq 1 ]]; then
-    mkdir -p "$suite_dir"
+    if [[ $DRY_RUN -eq 0 ]]; then
+      mkdir -p "$suite_dir"
+    fi
     local -a suite_cmd=(python tools/tracking/run_contradiction_suite.py "$BASE_CONFIG" "$final_ckpt" --work-root "$suite_dir" --onset "$SUITE_ONSET" --c-tail-keep-recent "$SUITE_C_TAIL_KEEP_RECENT" --launcher "$LAUNCHER" --gpus "$EVAL_GPUS")
     if [[ ${#SUITE_MODES_ARR[@]} -gt 0 ]]; then
       suite_cmd+=(--modes "${SUITE_MODES_ARR[@]}")
@@ -341,12 +362,13 @@ run_one() {
     if [[ $DRY_RUN -eq 1 ]]; then
       suite_cmd+=(--dry-run)
     fi
-    echo "[${baseline}] contradiction suite start" | tee -a "$b_log"
+    log_message "$b_log" "[${baseline}] contradiction suite start"
     run_or_print "${suite_cmd[@]}"
   fi
 
-  local effective_json="$BASE_DIR/${baseline}/effective_args.json"
-  cat > "$effective_json" <<JSON
+  if [[ $DRY_RUN -eq 0 ]]; then
+    local effective_json="$BASE_DIR/${baseline}/effective_args.json"
+    cat > "$effective_json" <<JSON
 {
   "baseline": "${baseline}",
   "seed": ${SEED},
@@ -366,6 +388,7 @@ run_one() {
   "cons_frames": ${CONS_FRAMES}
 }
 JSON
+  fi
 }
 
 TARGETS=()
@@ -381,7 +404,7 @@ EFFECTIVE_MODE="$MODE"
 if [[ "$MODE" == "both_parallel" && "$AVAILABLE_GPUS" -gt 0 ]]; then
   needed=$(( TRAIN_GPUS * 2 ))
   if [[ "$AVAILABLE_GPUS" -lt "$needed" ]]; then
-    echo "[run_b1_b2] Insufficient available-gpus=${AVAILABLE_GPUS} for parallel need=${needed}; falling back to sequential." | tee -a "$MAIN_LOG"
+    log_message "$MAIN_LOG" "[run_b1_b2] Insufficient available-gpus=${AVAILABLE_GPUS} for parallel need=${needed}; falling back to sequential."
     EFFECTIVE_MODE="both_sequential"
   fi
 fi
@@ -403,9 +426,10 @@ STATUS="success"
 if [[ $DRY_RUN -eq 1 ]]; then
   STATUS="dry_run"
 fi
-MANIFEST_JSON="$MANIFEST_DIR/manifest.json"
-INDEX_CSV="$MANIFEST_DIR/results_index.csv"
-cat > "$MANIFEST_JSON" <<JSON
+if [[ $DRY_RUN -eq 0 ]]; then
+  MANIFEST_JSON="$MANIFEST_DIR/manifest.json"
+  INDEX_CSV="$MANIFEST_DIR/results_index.csv"
+  cat > "$MANIFEST_JSON" <<JSON
 {
   "run_id": "${RUN_ID}",
   "mode_requested": "${MODE}",
@@ -428,9 +452,12 @@ cat > "$MANIFEST_JSON" <<JSON
 }
 JSON
 
-echo "run_id,baseline,mode,seed,launcher,train_gpus,eval_gpus,status,base_dir" > "$INDEX_CSV"
-for b in "${TARGETS[@]}"; do
-  echo "$RUN_ID,$b,$EFFECTIVE_MODE,$SEED,$LAUNCHER,$TRAIN_GPUS,$EVAL_GPUS,$STATUS,$BASE_DIR/$b" >> "$INDEX_CSV"
-done
+  echo "run_id,baseline,mode,seed,launcher,train_gpus,eval_gpus,status,base_dir" > "$INDEX_CSV"
+  for b in "${TARGETS[@]}"; do
+    echo "$RUN_ID,$b,$EFFECTIVE_MODE,$SEED,$LAUNCHER,$TRAIN_GPUS,$EVAL_GPUS,$STATUS,$BASE_DIR/$b" >> "$INDEX_CSV"
+  done
 
-echo "[run_b1_b2] Done. Manifest: $MANIFEST_JSON"
+  echo "[run_b1_b2] Done. Manifest: $MANIFEST_JSON"
+else
+  echo "[run_b1_b2] Dry run complete."
+fi

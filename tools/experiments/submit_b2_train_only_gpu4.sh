@@ -3,17 +3,19 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-RUN_ID="${RUN_ID-b2_stage3_gpu8_trainonly}"
+RUN_ID="${RUN_ID-b2_stage3_gpu4_short_trainonly}"
 PARTITION="${PARTITION-}"
-QOS="${QOS-gpu-medium}"
-TIME_LIMIT="${TIME_LIMIT-1-23:30:00}"
+QOS="${QOS-gpu-short}"
+TIME_LIMIT="${TIME_LIMIT-06:00:00}"
 MAIL_USER="${MAIL_USER-yk3904@princeton.edu}"
 MAIL_TYPE="${MAIL_TYPE-BEGIN,END,FAIL}"
-CONSTRAINT="${CONSTRAINT-gpu80}"
-TRAIN_GPUS="${TRAIN_GPUS-8}"
+CONSTRAINT="${CONSTRAINT-a100&nomig}"
+TRAIN_GPUS="${TRAIN_GPUS-4}"
 EVAL_GPUS="${EVAL_GPUS-2}"
-GPUS_PER_NODE="${GPUS_PER_NODE-4}"
+GPUS_PER_NODE="${GPUS_PER_NODE-2}"
 CPUS_PER_TASK="${CPUS_PER_TASK-8}"
+
+CFG_COMMON="num_gpus=4 data.samples_per_gpu=2 optimizer.lr=2.5e-4 lr_config.warmup_iters=1000 checkpoint_config.interval=3496 evaluation.interval=20976 runner.max_iters=167808"
 
 CMD=(bash tools/experiments/submit_b1_b2_sbatch.sh
   --mode b2_only
@@ -29,6 +31,7 @@ CMD=(bash tools/experiments/submit_b1_b2_sbatch.sh
   --eval-gpus "$EVAL_GPUS"
   --gpus-per-node "$GPUS_PER_NODE"
   --cpus-per-task "$CPUS_PER_TASK"
+  --cfg-options-common "$CFG_COMMON"
   --skip-train-validation
   --skip-final-eval)
 

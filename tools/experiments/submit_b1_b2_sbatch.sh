@@ -196,7 +196,11 @@ if (( ALLOCATED_GPUS % GPUS_PER_NODE != 0 )); then
   exit 2
 fi
 NODES=$(( ALLOCATED_GPUS / GPUS_PER_NODE ))
-SBATCH_ROOT="${WORK_ROOT%/}/sbatch/b1_b2/${RUN_ID}"
+SBATCH_BASE_ROOT="${WORK_ROOT%/}/sbatch/b1_b2/${RUN_ID}"
+SBATCH_ROOT="$SBATCH_BASE_ROOT"
+if [[ $DRY_RUN -eq 1 ]]; then
+  SBATCH_ROOT="${WORK_ROOT%/}/sbatch/dry_run/b1_b2/${RUN_ID}/${TS}"
+fi
 SBATCH_LOG_DIR="$SBATCH_ROOT/logs"
 SBATCH_SCRIPT="$SBATCH_ROOT/${MODE}.sbatch"
 mkdir -p "$SBATCH_LOG_DIR"
@@ -285,8 +289,9 @@ if [[ -n "$DEPENDENCY" ]]; then
   SBATCH_DIRECTIVES+=("#SBATCH --dependency=${DEPENDENCY}")
 fi
 
-printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' > "$SBATCH_SCRIPT"
+printf '%s\n' '#!/usr/bin/env bash' > "$SBATCH_SCRIPT"
 printf '%s\n' "${SBATCH_DIRECTIVES[@]}" >> "$SBATCH_SCRIPT"
+printf '%s\n' 'set -euo pipefail' >> "$SBATCH_SCRIPT"
 cat >> "$SBATCH_SCRIPT" <<EOF
 
 module purge
@@ -321,6 +326,9 @@ fi
 SBATCH_SUBMIT_CMD+=("$SBATCH_SCRIPT")
 
 echo "[submit_b1_b2_sbatch] Generated: $SBATCH_SCRIPT"
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "[submit_b1_b2_sbatch] Dry-run preview kept separate from canonical path: $SBATCH_BASE_ROOT/${MODE}.sbatch"
+fi
 echo "[submit_b1_b2_sbatch] Submission command: ${SBATCH_SUBMIT_CMD[*]}"
 if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
