@@ -23,7 +23,7 @@ set -euo pipefail
 # ── USER CONFIG ───────────────────────────────────────────────────────────────
 # Path to your already-transferred nuScenes dataset directory.
 # Leave as SET_ME_NUSCENES_PATH to skip symlinking for now.
-NUSCENES_ROOT="SET_ME_NUSCENES_PATH"
+NUSCENES_ROOT="/scratch/rc5898/tracker/datasets/nuscenes"
 
 # Path to your already-transferred Argoverse2 dataset directory.
 # Leave as SET_ME_AV2_PATH to skip symlinking for now.
@@ -33,7 +33,7 @@ AV2_ROOT="SET_ME_AV2_PATH"
 CONDA_ENV_NAME="maptracker"
 
 # Anaconda module to load.  Change if your cluster uses a different module name.
-ANACONDA_MODULE="anaconda3/2023.9"
+ANACONDA_MODULE="anaconda3/2024.02"
 
 # Set to 1 to download pretrained checkpoints from HuggingFace automatically.
 # Set to 0 to skip (e.g. if you already have them or prefer Dropbox).

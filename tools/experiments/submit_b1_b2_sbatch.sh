@@ -264,6 +264,7 @@ SBATCH_DIRECTIVES=(
   "#SBATCH --gres=gpu:${GPUS_PER_NODE}"
   "#SBATCH --gpus-per-task=1"
   "#SBATCH --time=${TIME_LIMIT}"
+  "#SBATCH --exclude=neu304"
   "#SBATCH --output=${SBATCH_LOG_DIR}/%x-%j.out"
   "#SBATCH --error=${SBATCH_LOG_DIR}/%x-%j.err"
   "#SBATCH --mail-type=${MAIL_TYPE}"
@@ -292,24 +293,72 @@ fi
 printf '%s\n' '#!/usr/bin/env bash' > "$SBATCH_SCRIPT"
 printf '%s\n' "${SBATCH_DIRECTIVES[@]}" >> "$SBATCH_SCRIPT"
 printf '%s\n' 'set -euo pipefail' >> "$SBATCH_SCRIPT"
+
+# 1. Inject the Environment Variables
 cat >> "$SBATCH_SCRIPT" <<EOF
 
-module purge
-EOF
-if [[ -n "$MODULE_LOAD" ]]; then
-  printf 'module load %q\n' "$MODULE_LOAD" >> "$SBATCH_SCRIPT"
-fi
-cat >> "$SBATCH_SCRIPT" <<EOF
-source "\$(conda info --base)/etc/profile.d/conda.sh"
+# Use direct Conda hook instead of module load for reliability
+cd /n/fs/dynamicbias/tracker
+eval "\$(conda shell.bash hook)"
 conda activate ${CONDA_ENV}
+
+# Prevent PyTorch DataLoader thread explosions
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+# Bypass SSL verification for downloading pre-trained weights
+export PYTHONHTTPSVERIFY=0
 
 export PROJECT_ROOT=${PROJECT_ROOT}
 export PYTHONPATH="\$PROJECT_ROOT:\${PYTHONPATH:-}"
 export SRUN_CPUS_PER_TASK=${CPUS_PER_TASK}
 EOF
+
+# 2. Inject your literal File Transfer Script
+# We use quotes around 'FILE_TRANSFER_EOF' so Bash writes it exactly as-is
+cat >> "$SBATCH_SCRIPT" <<'FILE_TRANSFER_EOF'
+
+#### FILE TRANSFER ####
+DIR_NAME="/scratch/rc5898/tracker"
+TAR_PATH="/scratch/rc5898/tracker.tar"
+
+if [ ! -d "$DIR_NAME" ]; then
+    echo "Tracker directory not found on this node. Handling transfer..."
+    if [ ! -f "$TAR_PATH" ]; then
+        echo "Tar file not found locally. Downloading from login node..."
+        expect << EXPECT_EOF
+set timeout -1
+set send_slow {1 .1}
+spawn rsync -avP "rc5898@neuronic.cs.princeton.edu:$TAR_PATH" "/scratch/rc5898/"
+expect "Passcode or option (1-3):"
+sleep 3
+send -s "1\r"
+expect eof
+EXPECT_EOF
+    fi
+    echo "Uncompressing $TAR_PATH..."
+    tar -xf "$TAR_PATH" -C /scratch/rc5898/
+    echo "Uncompress complete."
+else
+    echo "Directory $DIR_NAME already exists on this node. Skipping transfer."
+fi
+
+echo "Setting up symlink portal..."
+ln -sfn /scratch/rc5898/tracker/datasets /n/fs/dynamicbias/tracker/datasets
+
+echo "Injecting tracking files from project directory to local scratch..."
+\cp /n/fs/dynamicbias/tracker/datasets-swp/*gt_tracks.pkl /scratch/rc5898/tracker/datasets/nuscenes/
+
+FILE_TRANSFER_EOF
+
+# 3. Inject the SRUN arguments
 if [[ -n "$SRUN_ARGS_STR" ]]; then
   printf 'export SRUN_ARGS=%q\n' "$SRUN_ARGS_STR" >> "$SBATCH_SCRIPT"
 fi
+
+# 4. Inject the final Python execution command
 cat >> "$SBATCH_SCRIPT" <<EOF
 
 cd "\$PROJECT_ROOT"
@@ -328,11 +377,9 @@ SBATCH_SUBMIT_CMD+=("$SBATCH_SCRIPT")
 echo "[submit_b1_b2_sbatch] Generated: $SBATCH_SCRIPT"
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "[submit_b1_b2_sbatch] Dry-run preview kept separate from canonical path: $SBATCH_BASE_ROOT/${MODE}.sbatch"
-fi
-echo "[submit_b1_b2_sbatch] Submission command: ${SBATCH_SUBMIT_CMD[*]}"
-if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
+echo "[submit_b1_b2_sbatch] Submission command: ${SBATCH_SUBMIT_CMD[*]}"
 
 SUBMIT_OUTPUT="$("${SBATCH_SUBMIT_CMD[@]}")"
 echo "$SUBMIT_OUTPUT"

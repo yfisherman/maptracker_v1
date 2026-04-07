@@ -85,7 +85,7 @@ model = dict(
         gate_supervision_enabled=True,
         corruption_probs=dict(clean=0.6, c_full=0.2, c_tail=0.2),
         stale_offsets=[4, 8],
-        corruption_onset=2,
+        corruption_onset=0,
         c_tail_keep_recent=1,
         gate_loss_weights=dict(lambda_close=1.0, lambda_open=0.5, lambda_clean=0.1),
         enable_clean_open_loss=True,
