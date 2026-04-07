@@ -469,6 +469,7 @@ class MapTracker(BaseMapper):
             'alpha_mean_preserved_recent': zero,
             'alpha_mean_clean_recent': zero,
             'affected_batch_fraction': zero,
+            'eligible_slot_fraction': zero,
             'historical_path_strength_ratio_clean': zero,
         }
 
@@ -479,6 +480,8 @@ class MapTracker(BaseMapper):
         close_terms, open_terms, clean_terms = [], [], []
         affected_non_empty = 0
         clean_ratio_vals = []
+        eligible_slots = 0.0
+        valid_slots = 0.0
         total_batches = max(len(memory_bank.batch_alpha_soft_dict), 1)
 
         for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
@@ -502,6 +505,8 @@ class MapTracker(BaseMapper):
 
             alpha_valid = alpha_full[valid_track_idx]
             affected = eligible & corrupt
+            eligible_slots += float(eligible.sum().item())
+            valid_slots += float(valid_mem.sum().item())
 
             if affected.any():
                 affected_non_empty += 1
@@ -548,6 +553,7 @@ class MapTracker(BaseMapper):
             'alpha_mean_preserved_recent': torch.cat(preserved_vals).mean() if preserved_vals else zero,
             'alpha_mean_clean_recent': torch.cat(clean_vals).mean() if clean_vals else zero,
             'affected_batch_fraction': zero + float(affected_non_empty) / float(total_batches),
+            'eligible_slot_fraction': zero + (eligible_slots / max(valid_slots, 1.0)),
             'historical_path_strength_ratio_clean': (
                 torch.stack(clean_ratio_vals).mean() if clean_ratio_vals else zero),
         })
@@ -650,6 +656,10 @@ class MapTracker(BaseMapper):
         if self.corruption_trained_no_gate_baseline:
             clip_corruption_mode = self._sample_corruption_mode()
         clip_stale_offset = self._resolve_stale_offset()
+        if _use_memory:
+            # Keep stale offset within currently available train-time memory depth.
+            # This avoids silent no-op corruption when offset exceeds mem_len.
+            clip_stale_offset = min(int(clip_stale_offset), max(int(self.mem_len) - 1, 0))
 
         if all_prev_data is not None:
             num_prev_frames = len(all_prev_data)        
@@ -894,7 +904,10 @@ class MapTracker(BaseMapper):
             'alpha_mean_preserved_recent': gate_metrics['alpha_mean_preserved_recent'].item(),
             'alpha_mean_clean_recent': gate_metrics['alpha_mean_clean_recent'].item(),
             'affected_batch_fraction': gate_metrics['affected_batch_fraction'].item(),
+            'eligible_slot_fraction': gate_metrics['eligible_slot_fraction'].item(),
             'historical_path_strength_ratio_clean': gate_metrics['historical_path_strength_ratio_clean'].item(),
+            'clip_corruption_mode_id': float({'clean': 0, 'c_full': 1, 'c_tail': 2}.get(str(clip_corruption_mode).lower(), -1)),
+            'clip_stale_offset': float(clip_stale_offset),
         }
         log_vars.update(gate_log)
 
