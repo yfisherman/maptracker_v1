@@ -55,6 +55,12 @@ fi
 if [[ "${RESUME:-0}" == "1" ]]; then
   CMD+=(--resume)
 fi
+if [[ "${SKIP_TRAIN_VALIDATION:-0}" == "1" ]]; then
+  CMD+=(--skip-train-validation)
+fi
+if [[ "${SKIP_FINAL_EVAL:-0}" == "1" ]]; then
+  CMD+=(--skip-final-eval)
+fi
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
   CMD+=(--dry-run)
 fi
