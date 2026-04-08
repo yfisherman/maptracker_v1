@@ -52,7 +52,12 @@ fi
 if [[ -n "$CONSTRAINT" ]]; then
   CMD+=(--constraint "$CONSTRAINT")
 fi
-
+if [[ "${SKIP_TRAIN_VALIDATION:-0}" == "1" ]]; then
+  CMD+=(--skip-train-validation)
+fi
+if [[ "${SKIP_FINAL_EVAL:-0}" == "1" ]]; then
+  CMD+=(--skip-final-eval)
+fi
 if [[ "${RESUME:-0}" == "1" ]]; then
   CMD+=(--resume)
 fi
