@@ -198,5 +198,5 @@ Tracked divergences include:
 4. Slotwise embedding/value gate-interface contract vs explicit per-head K/V contract.
 5. Runtime verification maturity gap in current environment.
 
-Divergence disposition should be tracked in `audit/divergence_register.md`.
+Divergence disposition should be tracked in `divergence_register.md`.
 
