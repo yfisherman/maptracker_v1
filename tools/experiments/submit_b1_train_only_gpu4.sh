@@ -21,7 +21,7 @@ GPUS_PER_NODE="${GPUS_PER_NODE-4}"          # Force all 4 GPUs onto ONE node
 CPUS_PER_TASK="${CPUS_PER_TASK-6}"          # 4 GPUs * 6 CPUs = 24 Cores
 
 # Learning Rate & Batch Size Scaling for 4 GPUs
-CFG_COMMON="fp16.loss_scale=512.0 num_gpus=4 data.samples_per_gpu=4 optimizer.lr=5.0e-4 lr_config.warmup_iters=500 checkpoint_config.interval=1748 evaluation.interval=10488 runner.max_iters=83904"
+CFG_COMMON="fp16.loss_scale=512.0 num_gpus=4 data.samples_per_gpu=4 optimizer.lr=5.0e-4 lr_config.warmup_iters=500 checkpoint_config.interval=1748 evaluation.interval=10488 runner.max_iters=167808"
 
 # ==========================================
 # BUILD THE COMMAND ARRAY
