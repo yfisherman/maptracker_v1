@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Submit final B1/B2 iter_78660 evaluation as one Slurm job.
+Submit final B1/B2 iter_31464 evaluation as one Slurm job.
 
 Usage:
-  bash tools/experiments/submit_final_eval_b1_b2_iter78660_sbatch.sh --mail-user EMAIL [options]
+  bash tools/experiments/submit_final_eval_b1_b2_iter31464_sbatch.sh --mail-user EMAIL [options]
 
 Required:
   --mail-user EMAIL
@@ -32,7 +32,7 @@ Optional:
 Notes:
   - This uses launcher=slurm-step inside the allocated job for robust port retry handling.
   - Eval outputs are written under:
-    <work-root>/experiments/b1_b2/{b1_stage3_gpu4_short_trainonly,b2_stage3_gpu4_short_trainonly}/{b1,b2}/eval_deferred/iter_78660/clean/
+    <work-root>/experiments/b1_b2/{b1_stage3_gpu4_short_trainonly,b2_stage3_gpu4_short_trainonly}/{b1,b2}/eval_deferred/iter_31464/clean/
 USAGE
 }
 
@@ -72,30 +72,29 @@ while [[ $# -gt 0 ]]; do
     --extra-wrap-args) EXTRA_WRAP_ARGS_STR="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "[submit_final_eval_b1_b2_iter59432_sbatch] Unknown argument: $1" >&2; usage; exit 2 ;;
+    *) echo "[submit_final_eval_b1_b2_iter31464_sbatch] Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
 
 if [[ -z "$MAIL_USER" ]]; then
-  echo "[submit_final_eval_b1_b2_iter59432_sbatch] Missing required arguments." >&2
+  echo "[submit_final_eval_b1_b2_iter31464_sbatch] Missing required arguments." >&2
   usage
   exit 2
 fi
 
 if (( GPUS <= 0 || CPUS_PER_TASK <= 0 )); then
-  echo "[submit_final_eval_b1_b2_iter59432_sbatch] --gpus and --cpus-per-task must be positive integers." >&2
+  echo "[submit_final_eval_b1_b2_iter31464_sbatch] --gpus and --cpus-per-task must be positive integers." >&2
   exit 2
 fi
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TS="$(date -u +%Y%m%d_%H%M%S)"
-SBATCH_ROOT="${WORK_ROOT%/}/sbatch/final_eval_b1_b2_iter59432/${TS}"
-SBATCH_ROOT="${WORK_ROOT%/}/sbatch/final_eval_b1_b2_iter78660/${TS}"
+SBATCH_ROOT="${WORK_ROOT%/}/sbatch/final_eval_b1_b2_iter31464/${TS}"
 SBATCH_LOG_DIR="$SBATCH_ROOT/logs"
 SBATCH_SCRIPT="$SBATCH_ROOT/submit.sbatch"
 mkdir -p "$SBATCH_LOG_DIR"
 
-RUN_CMD=(bash tools/experiments/run_final_eval_b1_b2_iter59432.sh
+RUN_CMD=(bash tools/experiments/run_final_eval_b1_b2_iter31464.sh
   --launcher slurm-step
   --gpus "$GPUS"
   --seed "$SEED"
@@ -158,11 +157,11 @@ EOF
 
 chmod +x "$SBATCH_SCRIPT"
 
-echo "[submit_final_eval_b1_b2_iter59432_sbatch] Generated: $SBATCH_SCRIPT"
-echo "[submit_final_eval_b1_b2_iter59432_sbatch] Logs dir: $SBATCH_LOG_DIR"
+echo "[submit_final_eval_b1_b2_iter31464_sbatch] Generated: $SBATCH_SCRIPT"
+echo "[submit_final_eval_b1_b2_iter31464_sbatch] Logs dir: $SBATCH_LOG_DIR"
 
 if [[ $DRY_RUN -eq 1 ]]; then
-  echo "[submit_final_eval_b1_b2_iter78660_sbatch] Dry run, not submitting."
+  echo "[submit_final_eval_b1_b2_iter31464_sbatch] Dry run, not submitting."
   exit 0
 fi
 

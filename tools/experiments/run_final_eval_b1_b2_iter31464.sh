@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Run final evaluation for B1/B2 iter_59432 checkpoints.
+Run final evaluation for B1/B2 iter_31464 checkpoints.
 
 Usage:
-  bash tools/experiments/run_final_eval_b1_b2_iter59432.sh [options]
+  bash tools/experiments/run_final_eval_b1_b2_iter31464.sh [options]
 
 Options:
   --work-root DIR            Work root that contains experiments/ (default: /n/fs/dynamicbias/tracker/work_dirs)
@@ -22,8 +22,8 @@ Options:
   -h, --help                 Show this help
 
 Defaults are wired to:
-  b1: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_78660.pth
-  b2: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_78660.pth
+  b1: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_31464.pth
+  b2: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_31464.pth
 USAGE
 }
 
@@ -46,8 +46,8 @@ B2_BASELINE="b2"
 B1_CONFIG="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py"
 B2_CONFIG="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py"
 
-B1_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_78660.pth"
-B2_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_78660.pth"
+B1_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_31464.pth"
+B2_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_31464.pth"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -120,7 +120,7 @@ bash tools/experiments/run_b1_b2_deferred_eval.sh \
   --checkpoint "$B1_CHECKPOINT" \
   --run-id "$B1_RUN_ID" \
   --baseline "$B1_BASELINE" \
-  --checkpoint-tag "iter_59432" \
+  --checkpoint-tag "iter_31464" \
   --condition-tag "clean" \
   "${common_args[@]}"
 
@@ -130,7 +130,7 @@ bash tools/experiments/run_b1_b2_deferred_eval.sh \
   --checkpoint "$B2_CHECKPOINT" \
   --run-id "$B2_RUN_ID" \
   --baseline "$B2_BASELINE" \
-  --checkpoint-tag "iter_59432" \
+  --checkpoint-tag "iter_31464" \
   --condition-tag "clean" \
   "${common_args[@]}"
 
