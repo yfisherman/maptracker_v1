@@ -123,6 +123,7 @@ printf -v RUN_CMD_STR '%q ' "${RUN_CMD[@]}"
   echo "#SBATCH --error=${SBATCH_LOG_DIR}/%x-%j.err"
   echo "#SBATCH --mail-type=${MAIL_TYPE}"
   echo "#SBATCH --mail-user=${MAIL_USER}"
+  echo "#SBATCH --exclude=neu303"
   if [[ -n "$PARTITION" ]]; then
     echo "#SBATCH --partition=${PARTITION}"
   fi
