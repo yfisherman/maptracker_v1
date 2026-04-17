@@ -150,6 +150,43 @@ export NUMEXPR_NUM_THREADS=1
 export PYTHONPATH="$PROJECT_ROOT:\${PYTHONPATH:-}"
 export SRUN_CPUS_PER_TASK="$CPUS_PER_TASK"
 
+# Bypass SSL verification for downloading pre-trained weights
+export PYTHONHTTPSVERIFY=0
+
+#### FILE TRANSFER ####
+echo "[submit_final_eval] Preparing file transfers..."
+DIR_NAME="/scratch/rc5898/tracker"
+TAR_PATH="/scratch/rc5898/tracker.tar"
+
+if [ ! -d "\$DIR_NAME" ]; then
+    echo "Tracker directory not found on this node. Handling transfer..."
+    if [ ! -f "\$TAR_PATH" ]; then
+        echo "Tar file not found locally. Downloading from login node..."
+        expect << EXPECT_EOF
+set timeout -1
+set send_slow {1 .1}
+spawn rsync -avP "rc5898@neuronic.cs.princeton.edu:\$TAR_PATH" "/scratch/rc5898/"
+expect "Passcode or option (1-3):"
+sleep 3
+send -s "1\r"
+expect eof
+EXPECT_EOF
+    fi
+    echo "Uncompressing \$TAR_PATH..."
+    tar -xf "\$TAR_PATH" -C /scratch/rc5898/
+    echo "Uncompress complete."
+else
+    echo "Directory \$DIR_NAME already exists on this node. Skipping transfer."
+fi
+
+echo "Setting up symlink portal..."
+ln -sfn /scratch/rc5898/tracker/datasets /n/fs/dynamicbias/tracker/datasets
+
+echo "Injecting tracking files from project directory to local scratch..."
+\cp /n/fs/dynamicbias/tracker/datasets-swp/*gt_tracks.pkl /scratch/rc5898/tracker/datasets/nuscenes/
+
+echo "[submit_final_eval] File transfer complete"
+
 echo "[submit_final_eval] Starting final eval wrapper"
 ${RUN_CMD_STR}
 echo "[submit_final_eval] Completed"
