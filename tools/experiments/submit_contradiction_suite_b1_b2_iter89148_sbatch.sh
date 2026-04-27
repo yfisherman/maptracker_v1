@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Submit contradiction-suite evaluation for B1/B2 iter_78660 as one Slurm job.
+Submit contradiction-suite evaluation for B1/B2 iter_89148 as one Slurm job.
 
 Usage:
-  bash tools/experiments/submit_contradiction_suite_b1_b2_iter59432_sbatch.sh --mail-user EMAIL --onset N [options]
+  bash tools/experiments/submit_contradiction_suite_b1_b2_iter89148_sbatch.sh --mail-user EMAIL --onset N [options]
 
 Required:
   --mail-user EMAIL
@@ -40,10 +40,10 @@ Optional:
   --dry-run                         Generate sbatch script but do not submit.
   -h, --help
 
-    bash tools/experiments/submit_contradiction_suite_b1_b2_iter59432_sbatch.sh --mail-user EMAIL [options]
+    bash tools/experiments/submit_contradiction_suite_b1_b2_iter89148_sbatch.sh --mail-user EMAIL [options]
   - Defaults are wired to:
-    b1: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_78660.pth
-    b2: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_78660.pth
+    b1: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_89148.pth
+    b2: /n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_89148.pth
   - Suite outputs are written under:
     <work-root>/experiments/b1_b2/{b1_stage3_gpu4_short_trainonly,b2_stage3_gpu4_short_trainonly}/{b1,b2}/contradiction_suite/<iter>_onset<onset>_<suite-tag>/
 USAGE
@@ -80,19 +80,19 @@ DRY_RUN=0
 B1_CONFIG="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py"
 B2_CONFIG="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py"
 
-B1_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_78660.pth"
-B2_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_78660.pth"
+B1_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b1_stage3_gpu4_short_trainonly/b1/train/iter_89148.pth"
+B2_CHECKPOINT="/n/fs/dynamicbias/tracker/work_dirs/experiments/b1_b2/b2_stage3_gpu4_short_trainonly/b2/train/iter_89148.pth"
 
 require_int_ge() {
   local val="$1"
   local name="$2"
   local min_val="$3"
   if ! [[ "$val" =~ ^[0-9]+$ ]]; then
-    echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] ${name} must be an integer >= ${min_val}." >&2
+    echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] ${name} must be an integer >= ${min_val}." >&2
     exit 2
   fi
   if (( val < min_val )); then
-    echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] ${name} must be >= ${min_val}." >&2
+    echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] ${name} must be >= ${min_val}." >&2
     exit 2
   fi
 }
@@ -127,12 +127,12 @@ while [[ $# -gt 0 ]]; do
     --extra-suite-args) EXTRA_SUITE_ARGS_STR="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Unknown argument: $1" >&2; usage; exit 2 ;;
+    *) echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
 
 if [[ -z "$MAIL_USER" ]]; then
-  echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Missing required arguments." >&2
+  echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Missing required arguments." >&2
   usage
   exit 2
 fi
@@ -144,7 +144,7 @@ require_int_ge "$C_TAIL_KEEP_RECENT" "--c-tail-keep-recent" 0
 
 case "$SUITE_LAUNCHER" in
   none|slurm) ;;
-  *) echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] --suite-launcher must be one of: none, slurm" >&2; exit 2 ;;
+  *) echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] --suite-launcher must be one of: none, slurm" >&2; exit 2 ;;
 esac
 
 read -r -a BASELINES_ARR <<< "$BASELINES_STR"
@@ -152,7 +152,7 @@ read -r -a MODES_ARR <<< "$MODES_STR"
 read -r -a STALE_OFFSETS_ARR <<< "$STALE_OFFSETS_STR"
 
 if [[ ${#BASELINES_ARR[@]} -eq 0 || ${#MODES_ARR[@]} -eq 0 || ${#STALE_OFFSETS_ARR[@]} -eq 0 ]]; then
-  echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] --baselines, --modes and --stale-offsets must each contain at least one value." >&2
+  echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] --baselines, --modes and --stale-offsets must each contain at least one value." >&2
   exit 2
 fi
 
@@ -162,14 +162,14 @@ for base in "${BASELINES_ARR[@]}"; do
   case "$base" in
     b1) RUN_B1=1 ;;
     b2) RUN_B2=1 ;;
-    *) echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Unsupported baseline in --baselines: $base (allowed: b1 b2)" >&2; exit 2 ;;
+    *) echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Unsupported baseline in --baselines: $base (allowed: b1 b2)" >&2; exit 2 ;;
   esac
 done
 
 for mode in "${MODES_ARR[@]}"; do
   case "$mode" in
     c_full|c_tail) ;;
-    *) echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Unsupported mode in --modes: $mode (allowed: c_full c_tail)" >&2; exit 2 ;;
+    *) echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Unsupported mode in --modes: $mode (allowed: c_full c_tail)" >&2; exit 2 ;;
   esac
 done
 
@@ -179,14 +179,14 @@ done
 
 for f in "$B1_CONFIG" "$B2_CONFIG" "$B1_CHECKPOINT" "$B2_CHECKPOINT"; do
   if [[ ! -f "$f" ]]; then
-    echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Missing required file: $f" >&2
+    echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Missing required file: $f" >&2
     exit 1
   fi
 done
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TS="$(date -u +%Y%m%d_%H%M%S)"
-SBATCH_ROOT="${WORK_ROOT%/}/sbatch/contradiction_suite_b1_b2_iter59432/${TS}"
+SBATCH_ROOT="${WORK_ROOT%/}/sbatch/contradiction_suite_b1_b2_iter89148/${TS}"
 SBATCH_LOG_DIR="$SBATCH_ROOT/logs"
 SBATCH_SCRIPT="$SBATCH_ROOT/submit.sbatch"
 mkdir -p "$SBATCH_LOG_DIR"
@@ -203,13 +203,13 @@ B2_SUITE_ROOT="${WORK_ROOT%/}/experiments/b1_b2/${B2_RUN_ID}/${B2_BASELINE}/cont
 
 if [[ "$ALLOW_OVERWRITE" -ne 1 ]]; then
   if [[ "$RUN_B1" -eq 1 && -d "$B1_SUITE_ROOT" ]] && [[ -n "$(ls -A "$B1_SUITE_ROOT" 2>/dev/null || true)" ]]; then
-    echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Refusing to overwrite existing non-empty output dir: $B1_SUITE_ROOT" >&2
-    echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Use --suite-tag to separate outputs or --allow-overwrite to bypass." >&2
+    echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Refusing to overwrite existing non-empty output dir: $B1_SUITE_ROOT" >&2
+    echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Use --suite-tag to separate outputs or --allow-overwrite to bypass." >&2
     exit 1
   fi
   if [[ "$RUN_B2" -eq 1 && -d "$B2_SUITE_ROOT" ]] && [[ -n "$(ls -A "$B2_SUITE_ROOT" 2>/dev/null || true)" ]]; then
-    echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Refusing to overwrite existing non-empty output dir: $B2_SUITE_ROOT" >&2
-    echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Use --suite-tag to separate outputs or --allow-overwrite to bypass." >&2
+    echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Refusing to overwrite existing non-empty output dir: $B2_SUITE_ROOT" >&2
+    echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Use --suite-tag to separate outputs or --allow-overwrite to bypass." >&2
     exit 1
   fi
 fi
@@ -322,18 +322,18 @@ EOF
 
 chmod +x "$SBATCH_SCRIPT"
 
-echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Generated: $SBATCH_SCRIPT"
-echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Logs dir: $SBATCH_LOG_DIR"
+echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Generated: $SBATCH_SCRIPT"
+echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Logs dir: $SBATCH_LOG_DIR"
 
 if [[ "$RUN_B1" -eq 1 ]]; then
-  echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] B1 output root: $B1_SUITE_ROOT"
+  echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] B1 output root: $B1_SUITE_ROOT"
 fi
 if [[ "$RUN_B2" -eq 1 ]]; then
-  echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] B2 output root: $B2_SUITE_ROOT"
+  echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] B2 output root: $B2_SUITE_ROOT"
 fi
 
 if [[ $DRY_RUN -eq 1 ]]; then
-  echo "[submit_contradiction_suite_b1_b2_iter59432_sbatch] Dry run, not submitting."
+  echo "[submit_contradiction_suite_b1_b2_iter89148_sbatch] Dry run, not submitting."
   exit 0
 fi
 
