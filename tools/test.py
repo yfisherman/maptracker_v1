@@ -111,6 +111,11 @@ def parse_args():
         '--condition-tag',
         default=None,
         help='Optional tag to save alongside outputs for condition bookkeeping.')
+    parser.add_argument(
+        '--dump-alpha-per-frame',
+        action='store_true',
+        default=False,
+        help='Dump per-frame per-slot alpha tensors to alpha_per_frame.pkl in work-dir.')
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
@@ -132,7 +137,7 @@ def apply_eval_corruption_overrides(cfg, args):
         args.memory_c_tail_keep_recent is not None,
         args.memory_corruption_onset is not None,
     ])
-    if not has_override:
+    if not has_override and not getattr(args, 'dump_alpha_per_frame', False):
         return
 
     if 'model' not in cfg:
@@ -151,6 +156,8 @@ def apply_eval_corruption_overrides(cfg, args):
     if args.memory_corruption_onset is not None:
         eval_cfg['memory_corruption_onset'] = int(args.memory_corruption_onset)
     mvp_cfg['eval_corruption_cfg'] = eval_cfg
+    if getattr(args, 'dump_alpha_per_frame', False):
+        mvp_cfg['dump_alpha_per_frame'] = True
     cfg.model.mvp_temporal_gate_cfg = mvp_cfg
 
 
@@ -170,6 +177,22 @@ def dump_alpha_stats_if_available(outputs, work_dir):
     alpha_path = osp.join(work_dir, 'alpha_stats.json')
     with open(alpha_path, 'w') as f:
         json.dump(summary, f, indent=2)
+
+
+def dump_alpha_per_frame_if_available(outputs, work_dir):
+    """Collect alpha_frame_data from all output dicts and save as alpha_per_frame.pkl."""
+    import pickle
+    records = []
+    for item in outputs:
+        if isinstance(item, dict) and item.get('alpha_frame_data') is not None:
+            records.append(item['alpha_frame_data'])
+    if not records:
+        return
+    os.makedirs(work_dir, exist_ok=True)
+    out_path = osp.join(work_dir, 'alpha_per_frame.pkl')
+    with open(out_path, 'wb') as f:
+        pickle.dump(records, f)
+    print(f'[dump_alpha_per_frame] Saved {len(records)} frame records to {out_path}')
 
 
 def main():
@@ -327,6 +350,8 @@ def main():
             with open(condition_meta_path, 'w') as f:
                 json.dump(condition_meta, f, indent=2)
         dump_alpha_stats_if_available(outputs, cfg.work_dir)
+        if getattr(args, 'dump_alpha_per_frame', False):
+            dump_alpha_per_frame_if_available(outputs, cfg.work_dir)
         kwargs = {} if args.eval_options is None else args.eval_options
         if args.format_only:
             dataset.format_results(outputs, **kwargs)

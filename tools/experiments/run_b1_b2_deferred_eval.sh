@@ -56,6 +56,7 @@ MEMORY_CORRUPTION_MODE=""
 MEMORY_STALE_OFFSET=""
 MEMORY_C_TAIL_KEEP_RECENT=""
 MEMORY_CORRUPTION_ONSET=""
+DUMP_ALPHA_PER_FRAME=0
 RERUN=0
 DRY_RUN=0
 
@@ -83,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     --memory-stale-offset) MEMORY_STALE_OFFSET="$2"; shift 2 ;;
     --memory-c-tail-keep-recent) MEMORY_C_TAIL_KEEP_RECENT="$2"; shift 2 ;;
     --memory-corruption-onset) MEMORY_CORRUPTION_ONSET="$2"; shift 2 ;;
+    --dump-alpha-per-frame) DUMP_ALPHA_PER_FRAME=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[run_b1_b2_deferred_eval] Unknown argument: $1" >&2; usage; exit 2 ;;
@@ -298,6 +300,9 @@ fi
 
 TEST_ARGS=(--work-dir "$EVAL_DIR" --eval --seed "$SEED" --condition-tag "$CONDITION_TAG")
 TEST_ARGS+=("${MEMORY_ARGS[@]}")
+if (( DUMP_ALPHA_PER_FRAME )); then
+  TEST_ARGS+=(--dump-alpha-per-frame)
+fi
 if [[ ${#CFG_OPTIONS_ARR[@]} -gt 0 ]]; then
   TEST_ARGS+=(--cfg-options "${CFG_OPTIONS_ARR[@]}")
 fi

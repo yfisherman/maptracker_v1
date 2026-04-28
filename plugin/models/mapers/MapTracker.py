@@ -83,6 +83,7 @@ class MapTracker(BaseMapper):
             self.mvp_temporal_gate_cfg.get('corruption_trained_no_gate_baseline', False))
         self.freeze_stage = self.mvp_temporal_gate_cfg.get('freeze_stage', None)
         self.unfreeze_stage = self.mvp_temporal_gate_cfg.get('unfreeze_stage', None)
+        self._dump_alpha_per_frame = bool(self.mvp_temporal_gate_cfg.get('dump_alpha_per_frame', False))
 
         # Baseline parity guard: corruption-trained no-gate runs must never
         # keep temporal gate forward accidentally enabled.
@@ -622,7 +623,49 @@ class MapTracker(BaseMapper):
         out['alpha_mean_preserved_recent'] = torch.cat(preserved_vals).mean() if preserved_vals else zero
         out['alpha_mean_clean_recent'] = torch.cat(clean_vals).mean() if clean_vals else zero
         return out
-        
+
+    def _collect_alpha_frame_data(self, memory_bank, scene_name, local_idx):
+        """Collect per-slot alpha data for one inference frame.
+
+        Returns a CPU-resident dict suitable for pickling, or None if no data.
+        Keys:
+          scene_name, local_idx,
+          alpha       [N_valid_tracks, T_mem]  float32
+          corrupt     [N_valid_tracks, T_mem]  bool
+          eligible    [N_valid_tracks, T_mem]  bool
+          valid_mem   [N_valid_tracks, T_mem]  bool
+          age_rank    [N_valid_tracks, T_mem]  float32
+          mode        str
+        """
+        if memory_bank is None or not hasattr(memory_bank, 'batch_alpha_soft_dict'):
+            return None
+        results = []
+        for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
+            valid_track_list = getattr(memory_bank, 'valid_track_idx', None)
+            if valid_track_list is None or b_i >= len(valid_track_list):
+                continue
+            valid_track_idx = valid_track_list[b_i]
+            if valid_track_idx is None or len(valid_track_idx) == 0:
+                continue
+            dev = alpha_full.device
+            valid_track_idx = valid_track_idx.to(dev)
+            corrupt = memory_bank.batch_slot_corrupt_mask_dict[b_i].to(dev)[valid_track_idx]
+            eligible = memory_bank.batch_slot_corrupt_eligible_dict[b_i].to(dev)[valid_track_idx]
+            valid_mem = memory_bank.batch_valid_mem_dict[b_i].to(dev)[valid_track_idx]
+            age_rank = memory_bank.batch_age_rank_norm_dict[b_i].to(dev)[valid_track_idx]
+            mode = str(memory_bank.batch_mem_corrupt_mode_dict.get(b_i, 'clean')).lower()
+            alpha_valid = alpha_full[valid_track_idx]
+            results.append({
+                'scene_name': scene_name,
+                'local_idx': int(local_idx),
+                'alpha': alpha_valid.cpu().float().numpy(),
+                'corrupt': corrupt.cpu().numpy(),
+                'eligible': eligible.cpu().numpy(),
+                'valid_mem': valid_mem.cpu().numpy(),
+                'age_rank': age_rank.cpu().float().numpy(),
+                'mode': mode,
+            })
+        return results[0] if len(results) == 1 else (results if results else None)
 
     def forward_train(self, img, vectors, semantic_mask, points=None, img_metas=None, all_prev_data=None,
                       all_local2global_info=None, **kwargs):
@@ -986,6 +1029,14 @@ class MapTracker(BaseMapper):
 
         alpha_stats = self._compute_inference_alpha_stats(
             self.memory_bank if self.use_memory else None, bev_feats.device)
+        # Capture per-frame alpha data HERE, before prepare_temporal_propagation
+        # calls update_memory() which mutates valid_track_idx while
+        # batch_slot_corrupt_mask_dict still holds the pre-update shape.
+        alpha_frame_data = None
+        if getattr(self, '_dump_alpha_per_frame', False):
+            alpha_frame_data = self._collect_alpha_frame_data(
+                self.memory_bank if self.use_memory else None,
+                scene_name, local_idx)
             
         if not self.skip_vector_head:
             # take predictions from the last layer
@@ -1032,6 +1083,8 @@ class MapTracker(BaseMapper):
             results_list[b_i]['alpha_stats'] = {
                 k: float(v.item()) for k, v in alpha_stats.items()
             }
+            if alpha_frame_data is not None:
+                results_list[b_i]['alpha_frame_data'] = alpha_frame_data
 
         return results_list
 

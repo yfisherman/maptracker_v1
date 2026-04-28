@@ -28,6 +28,14 @@ def parse_args():
                         help='extra cfg overrides passed through to tools/test.py')
     parser.add_argument('--dry-run', action='store_true',
                         help='print planned commands without executing')
+    parser.add_argument('--skip-summary', action='store_true',
+                        help='run inference and per-condition metrics but skip writing '
+                             'contradiction_suite_summary.json; use when conditions run '
+                             'in parallel and a dedicated aggregation job writes the summary')
+    parser.add_argument('--aggregate-only', action='store_true',
+                        help='skip inference and per-condition metrics; load existing '
+                             'contradiction_metrics.json from each condition dir and write '
+                             'the final contradiction_suite_summary.json only')
     return parser.parse_args()
 
 
@@ -85,6 +93,17 @@ def main():
         cond_workdir = osp.join(args.work_root, cond_name)
         os.makedirs(cond_workdir, exist_ok=True)
 
+        if args.aggregate_only:
+            metrics_path = osp.join(cond_workdir, 'contradiction_metrics.json')
+            if not osp.exists(metrics_path):
+                raise FileNotFoundError(
+                    f'[aggregate-only] metrics file not found: {metrics_path}\n'
+                    f'  Run the corruption eval first for condition: {cond_name}')
+            with open(metrics_path) as f:
+                aggregate['conditions'][cond_name] = json.load(f)
+            print(f'[aggregate-only] loaded: {metrics_path}')
+            continue
+
         cmd, condition_tag = build_test_command(args, mode, offset, cond_workdir)
         ret = run_cmd(cmd, args.dry_run)
         if ret != 0:
@@ -112,7 +131,7 @@ def main():
             cond_metrics = json.load(f)
         aggregate['conditions'][cond_name] = cond_metrics
 
-    if not args.dry_run:
+    if not args.dry_run and not args.skip_summary:
         for required_mode in ['c_full', 'c_tail']:
             mode_conds = {
                 k: v for k, v in aggregate['conditions'].items()
